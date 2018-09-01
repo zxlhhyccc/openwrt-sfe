@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -14,38 +14,31 @@
  **************************************************************************
  */
 
-/**
- * @file nss_pptp.h
- *	NSS PPTP interface definitions.
+/*
+ * nss_pptp.h
+ *	NSS TO HLOS interface definitions.
  */
-
 #ifndef _NSS_PPTP_H_
 #define _NSS_PPTP_H_
 
-/**
- * @addtogroup nss_pptp_subsystem
- * @{
- */
-
-/**
- * Maximum number of supported PPTP sessions.
+/*
+ * Maximum no of pptp sessions supported
  */
 #define NSS_MAX_PPTP_DYNAMIC_INTERFACES 4
 
 /**
- * nss_pptp_metadata_types
- *	Message types for PPTP requests and responses.
+ *  request/response types
  */
 enum nss_pptp_metadata_types {
-	NSS_PPTP_MSG_SESSION_CONFIGURE,
-	NSS_PPTP_MSG_SESSION_DECONFIGURE,
-	NSS_PPTP_MSG_SYNC_STATS,
+	NSS_PPTP_MSG_SESSION_CONFIGURE,		/**< session create message */
+	NSS_PPTP_MSG_SESSION_DECONFIGURE,		/**< session delete message */
+	NSS_PPTP_MSG_SYNC_STATS,		/**< session stats sync message */
 	NSS_PPTP_MSG_MAX
 };
 
 /**
- * nss_pptp_exception_events
- *	Exception events for PPTP encapsulation and decapsulation packets.
+ * PPTP encap/decap packet exception events.
+ *
  */
 enum nss_pptp_exception_events {
 	PPTP_EXCEPTION_EVENT_ENCAP_HEADROOM_ERR,
@@ -63,204 +56,140 @@ enum nss_pptp_exception_events {
 };
 
 /**
- * nss_pptp_session_configure_msg
- *	Message information for configuring a PPTP session.
+ * PPTP session configuration message structure
  */
 struct nss_pptp_session_configure_msg {
-	uint16_t src_call_id;		/**< Local call ID for caller or callee. */
-	uint16_t dst_call_id;		/**< Peer call ID for caller or callee. */
-	uint32_t sip;			/**< Local tunnel endpoint. */
-	uint32_t dip;			/**< Remote tunnel endpoint. */
+	uint16_t src_call_id;	/**< local call id */
+	uint16_t dst_call_id;	/**< peer call id */
+	uint32_t sip;		/**< local tunnel end point */
+	uint32_t dip;		/**< remote tunnel end point */
 };
 
 /**
- * nss_pptp_session_deconfigure_msg
- *	Message information for deleting a PPTP session.
+ * PPTP session deconfiguration message structure
  */
 struct nss_pptp_session_deconfigure_msg {
-	uint16_t src_call_id;		/**< Local call ID */
+	uint16_t src_call_id;	/**< local call id */
 };
 
 /**
- * nss_pptp_sync_session_stats_msg
- *	Message information for PPTP synchronization statistics.
+ * pptp statistics sync message structure.
  */
 struct nss_pptp_sync_session_stats_msg {
-	struct nss_cmn_node_stats encap_stats;
-			/**< Common node statistics for the encapsulation direction. */
-	struct nss_cmn_node_stats decap_stats;
-			/**< Common node statistics for the decapsulation direction. */
-	uint32_t exception_events[PPTP_EXCEPTION_EVENT_MAX];
-			/**< Statistics of events which casued packets to exception to host. */
+	struct nss_cmn_node_stats encap_stats;	/**< common node stats for encap direction */
+	struct nss_cmn_node_stats decap_stats;	/**< common node stats for decap direction */
+	uint32_t exception_events[PPTP_EXCEPTION_EVENT_MAX];	/**< Expception events */
 };
 
 /**
- * nss_pptp_msg
- *	Data for sending and receiving PPTP messages.
+ * Message structure to send/receive pptp messages
  */
 struct nss_pptp_msg {
-	struct nss_cmn_msg cm;		/**< Common message header. */
-
-	/**
-	 * Payload of a PPTP message.
-	 */
+	struct nss_cmn_msg cm;	/**< Message Header */
 	union {
-		struct nss_pptp_session_configure_msg session_configure_msg;
-				/**< Session configuration message. */
-		struct nss_pptp_session_deconfigure_msg session_deconfigure_msg;
-				/**< Session de-configuration message. */
-		struct nss_pptp_sync_session_stats_msg stats;
-				/**< Session statistics message. */
-	} msg;			/**< Message payload. */
+		struct nss_pptp_session_configure_msg session_configure_msg; /**< session configure message */
+		struct nss_pptp_session_deconfigure_msg session_deconfigure_msg; /**< session deconfigure message */
+		struct nss_pptp_sync_session_stats_msg stats;		/**< session stats message */
+	} msg;
 };
 
 /**
- * Callback function for receiving PPTP messages.
+ * @brief Callback to receive pptp  messages
  *
- * @datatypes
- * nss_pptp_msg
- *
- * @param[in] app_data  Pointer to the application context of the message.
- * @param[in] msg       Pointer to the message data.
+ * @return void
  */
 typedef void (*nss_pptp_msg_callback_t)(void *app_data, struct nss_pptp_msg *msg);
 
 /**
- * nss_pptp_tx_msg_sync
- *	Sends a PPTP message synchronously to NSS.
+ * @brief Send pptp messages synchronously
  *
- * @datatypes
- * nss_ctx_instance \n
- * nss_pptp_msg
+ * @param nss_ctx NSS context
+ * @param msg NSS pptp tunnel message
  *
- * @param[in] nss_ctx  Pointer to the NSS context.
- * @param[in] msg      Pointer to the message data.
- *
- * @return
- * Status of the Tx operation.
+ * @return nss_tx_status_t Tx status
  */
 extern nss_tx_status_t nss_pptp_tx_msg_sync(struct nss_ctx_instance *nss_ctx,
 					    struct nss_pptp_msg *msg);
-
 /**
- * nss_pptp_tx_buf
- *	Sends a data packet to the firmware.
+ * @brief Send data packet to FW
  *
- * @datatypes
- * nss_ctx_instance \n
- * sk_buff
+ * @param nss_ctx NSS context
+ * @param if_num NSS dynamic interface number
+ * @param skb packet buffer
  *
- * @param[in]     nss_ctx  Pointer to the NSS context.
- * @param[in]     if_num   NSS interface number.
- * @param[in]     skb      Pointer to the data socket buffer.
- *
- * @return
- * Status of the Tx operation.
+ * @return Tx status
  */
 extern nss_tx_status_t nss_pptp_tx_buf(struct nss_ctx_instance *nss_ctx, uint32_t if_num, struct sk_buff *skb);
 
 /**
- * nss_pptp_get_context
- *	Gets the PPTP context used in nss_pptp_tx.
+ * @brief Get the pptp context used in the nss_pptp_tx
  *
- * @return
- * Pointer to the NSS core context.
+ * @return struct nss_ctx_instance *NSS context
  */
 extern struct nss_ctx_instance *nss_pptp_get_context(void);
 
 /**
- * Callback function for receiving PPTP tunnel data.
+ * @brief Callback when pptp tunnel data is received
  *
- * @datatypes
- * net_device \n
- * sk_buff \n
- * napi_struct
+ * @param netdevice of pptp session
+ * @param skb Pointer to data buffer
+ * @param napi pointer
  *
- * @param[in] netdev  Pointer to the associated network device.
- * @param[in] skb     Pointer to the data socket buffer.
- * @param[in] napi    Pointer to the NAPI structure.
+ * @return void
  */
 typedef void (*nss_pptp_callback_t)(struct net_device *netdev, struct sk_buff *skb, struct napi_struct *napi);
 
 /**
- * nss_register_pptp_if
- *	Registers the PPTP tunnel interface with the NSS for sending and
- *	receiving messages.
+ * @brief Register to send/receive pptp tunnel messages to NSS
  *
- * @datatypes
- * nss_pptp_callback_t \n
- * nss_pptp_msg_callback_t \n
- * net_device
+ * @param if_num NSS interface number
+ * @param pptp_callback Callback for pptp tunnel data
+ * @param msg_callback Callback for pptp tunnel messages
+ * @param netdev netdevice associated with the pptp tunnel
+ * @param features denotes the skb types supported by this interface
  *
- * @param[in] if_num                 NSS interface number.
- * @param[in] pptp_data_callback     Callback for the data.
- * @param[in] notification_callback  Callback for the message.
- * @param[in] netdev                 Pointer to the associated network device.
- * @param[in] features               Socket buffer types supported by this interface.
- * @param[in] app_ctx                Pointer to the application context of the message.
- *
- * @return
- * Pointer to the NSS core context.
+ * @return nss_ctx_instance* NSS context
  */
 extern struct nss_ctx_instance *nss_register_pptp_if(uint32_t if_num, nss_pptp_callback_t pptp_data_callback,
 					nss_pptp_msg_callback_t notification_callback, struct net_device *netdev, uint32_t features, void *app_ctx);
 
 /**
- * nss_unregister_pptp_if
- *	Deregisters the PPTP tunnel interface from the NSS.
+ * @brief Unregister pptp tunnel interface with NSS
  *
- * @param[in] if_num  NSS interface number.
-. *
- * @return
- * None.
+ * @param if_num NSS interface number
  *
- * @dependencies
- * The tunnel interface must have been previously registered.
+ * @return void
  */
 extern void nss_unregister_pptp_if(uint32_t if_num);
 
 /**
- * nss_pptp_msg_init
- *	Initializes a PPTP message.
+ * @brief Initialize pptp msg
  *
- * @datatypes
- * nss_pptp_msg
+ * @param nss_pptp_msg PPTP session info i.e Configure/Deconfigure
+ * @param if_num Interface number
+ * @param type Message type
+ * @param len Message length
+ * @param cb message callback
+ * @param app_data
  *
- * @param[in,out] ncm       Pointer to the message.
- * @param[in]     if_num    Interface number
- * @param[in]     type      Type of message.
- * @param[in]     len       Size of the payload.
- * @param[in]     cb        Pointer to the message callback.
- * @param[in]     app_data  Pointer to the application context of the message.
- *
- * @return
- * None.
+ * @return None
  */
 extern void nss_pptp_msg_init(struct nss_pptp_msg *ncm, uint16_t if_num, uint32_t type,  uint32_t len, void *cb, void *app_data);
 
 /**
- * nss_pptp_register_handler
- *	Registers the PPTP interface with the NSS debug statistics handler.
+ * @brief register pptp nss debug stats handler
  *
- * @return
- * None.
+ * @return None
  */
 extern void nss_pptp_register_handler(void);
 
 /**
- * nss_pptp_session_debug_stats_get
- *	Gets NSS session debug statistics.
+ * @brief get pptp nss session debug stats. stats_mem should be large enought to hold all stats.
  *
- * @param[out] stats_mem  Pointer to the memory address, which must be large
- *                         enough to hold all the statistics.
+ * @param memory address to be copied to
  *
- * @return
- * None.
+ * @return None
  */
 extern void nss_pptp_session_debug_stats_get(void *stats_mem);
-
-/**
- * @}
- */
 
 #endif /* _NSS_PPTP_H_ */

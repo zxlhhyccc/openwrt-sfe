@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2013, 2015-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013, 2015-2016 The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -24,6 +24,7 @@
 #define NSS_ACK_STARTED 0
 #define NSS_ACK_FINISHED 1
 
+extern struct nss_cmd_buffer nss_cmd_buf;
 extern struct nss_frequency_statistics nss_freq_stat;
 extern struct nss_runtime_sampling nss_runtime_samples;
 extern struct workqueue_struct *nss_wq;
@@ -70,7 +71,7 @@ static void nss_freq_handle_ack(struct nss_ctx_instance *nss_ctx, struct nss_fre
  * nss_freq_queue_work()
  *	Queue Work to the NSS Workqueue based on Current index.
  */
-static bool nss_freq_queue_work(void)
+static int nss_freq_queue_work(void)
 {
 	nss_freq_scales_t index = nss_runtime_samples.freq_scale_index;
 
@@ -82,7 +83,9 @@ static bool nss_freq_queue_work(void)
 	/*
 	 * schedule freq change with autoscale ON
 	 */
-	return nss_freq_sched_change(index, true);
+	nss_freq_sched_change(index, true);
+
+	return 0;
 }
 
 /*
@@ -168,7 +171,7 @@ static void nss_freq_handle_core_stats(struct nss_ctx_instance *nss_ctx, struct 
 			 * If fail to increase frequency, decrease index
 			 */
 			nss_trace("frequency increase to %d inst:%x > maximum:%x\n", nss_runtime_samples.freq_scale[nss_runtime_samples.freq_scale_index].frequency, sample, maximum);
-			if (!nss_freq_queue_work()) {
+			if (nss_freq_queue_work()) {
 				nss_runtime_samples.freq_scale_index--;
 			}
 		}
@@ -195,7 +198,7 @@ static void nss_freq_handle_core_stats(struct nss_ctx_instance *nss_ctx, struct 
 			 * If fail to decrease frequency, increase index
 			 */
 			nss_trace("frequency decrease to %d inst:%x < minumum:%x\n", nss_runtime_samples.freq_scale[nss_runtime_samples.freq_scale_index].frequency, nss_runtime_samples.average, minimum);
-			if (!nss_freq_queue_work()) {
+			if (nss_freq_queue_work()) {
 				nss_runtime_samples.freq_scale_index++;
 			}
 		}
@@ -236,65 +239,75 @@ static void nss_freq_interface_handler(struct nss_ctx_instance *nss_ctx, struct 
  */
 nss_tx_status_t nss_freq_change(struct nss_ctx_instance *nss_ctx, uint32_t eng, uint32_t stats_enable, uint32_t start_or_end)
 {
-	struct nss_corefreq_msg ncm;
+	struct sk_buff *nbuf;
+	int32_t status;
+	struct nss_corefreq_msg *ncm;
 	struct nss_freq_msg *nfc;
 
 	nss_info("%p: frequency changing to: %d\n", nss_ctx, eng);
 
-	nss_freq_msg_init(&ncm, NSS_COREFREQ_INTERFACE, NSS_TX_METADATA_TYPE_NSS_FREQ_CHANGE,
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		return NSS_TX_FAILURE_NOT_READY;
+	}
+
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
+		return NSS_TX_FAILURE;
+	}
+
+	ncm = (struct nss_corefreq_msg *)skb_put(nbuf, sizeof(struct nss_corefreq_msg));
+
+	nss_freq_msg_init(ncm, NSS_COREFREQ_INTERFACE, NSS_TX_METADATA_TYPE_NSS_FREQ_CHANGE,
 				sizeof(struct nss_freq_msg), NULL, NULL);
-	nfc = &ncm.msg.nfc;
+	nfc = &ncm->msg.nfc;
 	nfc->frequency = eng;
 	nfc->start_or_end = start_or_end;
 	nfc->stats_enable = stats_enable;
 
-	return nss_core_send_cmd(nss_ctx, &ncm, sizeof(ncm), NSS_NBUF_PAYLOAD_SIZE);
+	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (status != NSS_CORE_STATUS_SUCCESS) {
+		dev_kfree_skb_any(nbuf);
+		nss_info("%p: unable to enqueue 'nss frequency change' - marked as stopped\n", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	nss_hal_send_interrupt(nss_ctx->nmap, nss_ctx->h2n_desc_rings[NSS_IF_CMD_QUEUE].desc_ring.int_bit, NSS_REGS_H2N_INTR_STATUS_DATA_COMMAND_QUEUE);
+
+	return NSS_TX_SUCCESS;
 }
 
 /*
  * nss_freq_sched_change()
  *	schedule a frequency work
  */
-bool nss_freq_sched_change(nss_freq_scales_t index, bool auto_scale)
+void nss_freq_sched_change(nss_freq_scales_t index, bool auto_scale)
 {
 	if (index >= NSS_FREQ_MAX_SCALE) {
 		nss_info("NSS freq scale beyond limit\n");
-		return false;
+		return;
 	}
 
 	nss_work = (nss_work_t *)kmalloc(sizeof(nss_work_t), GFP_ATOMIC);
 	if (!nss_work) {
 		nss_info("NSS Freq WQ kmalloc fail");
-		return false;
+		return;
 	}
 
-	INIT_WORK((struct work_struct *)nss_work, nss_hal_wq_function);
+	INIT_WORK((struct work_struct *)nss_work, nss_wq_function);
 
 	nss_work->frequency = nss_runtime_samples.freq_scale[index].frequency;
 
 	nss_work->stats_enable = auto_scale;
 	nss_cmd_buf.current_freq = nss_work->frequency;
 	queue_work(nss_wq, (struct work_struct *)nss_work);
-
-	return true;
 }
-
-/*
- * nss_freq_get_context()
- *	get NSS context instance for frequency
- */
-struct nss_ctx_instance *nss_freq_get_context(void)
-{
-	return (struct nss_ctx_instance *)&nss_top_main.nss[nss_top_main.frequency_handler_id];
-}
-EXPORT_SYMBOL(nss_freq_get_context);
 
 /*
  * nss_freq_register_handler()
  */
 void nss_freq_register_handler(void)
 {
-	struct nss_ctx_instance *nss_ctx = nss_freq_get_context();
-
-	nss_core_register_handler(nss_ctx, NSS_COREFREQ_INTERFACE, nss_freq_interface_handler, NULL);
+	nss_core_register_handler(NSS_COREFREQ_INTERFACE, nss_freq_interface_handler, NULL);
 }

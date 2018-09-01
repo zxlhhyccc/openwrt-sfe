@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -22,6 +22,7 @@
 #ifndef __NSS_TX_RX_COMMON_H
 #define __NSS_TX_RX_COMMON_H
 
+#include "nss_core.h"
 #include <nss_hal.h>
 #include <linux/module.h>
 #include <linux/vmalloc.h>
@@ -29,7 +30,7 @@
 /*
  * Global definitions
  */
-#define NSS_HLOS_MESSAGE_VERSION 1	/* Update when the common message structure changed */
+#define NSS_HLOS_MESSAGE_VERSION 0
 
 #if (NSS_DEBUG_LEVEL > 0)
 #define NSS_VERIFY_CTX_MAGIC(x) nss_verify_ctx_magic(x)
@@ -53,8 +54,6 @@ static inline void nss_verify_init_done(struct nss_ctx_instance *nss_ctx)
 #define NSS_VERIFY_INIT_DONE(x)
 #endif
 
-#define NSS_TX_RX_VIRT_IF_GET_INDEX(if_num)     (if_num - NSS_DYNAMIC_IF_START)
-
 /*
  * Deprecated Redirect
  */
@@ -75,8 +74,6 @@ enum nss_tx_rx_virt_if_msg_types {
 	NSS_TX_RX_VIRT_IF_BSHAPER_UNASSIGN = NSS_IF_BSHAPER_UNASSIGN,
 	NSS_TX_RX_VIRT_IF_ISHAPER_CONFIG = NSS_IF_ISHAPER_CONFIG,
 	NSS_TX_RX_VIRT_IF_BSHAPER_CONFIG = NSS_IF_BSHAPER_CONFIG,
-	NSS_TX_RX_VIRT_IF_VSI_ASSIGN = NSS_IF_VSI_ASSIGN,
-	NSS_TX_RX_VIRT_IF_VSI_UNASSIGN = NSS_IF_VSI_UNASSIGN,
 	NSS_TX_RX_VIRT_IF_TX_CREATE_MSG = NSS_IF_MAX_MSG_TYPES + 1,
 	NSS_TX_RX_VIRT_IF_TX_DESTROY_MSG,
 	NSS_TX_RX_VIRT_IF_STATS_SYNC_MSG,
@@ -100,7 +97,7 @@ enum nss_tx_rx_virt_if_error_types {
  * Structure which contains stats received from NSS.
  */
 struct nss_tx_rx_virt_if_stats {
-	struct nss_cmn_node_stats node_stats;	/**< common stats */
+	struct nss_if_stats node_stats;	/**< common stats */
 	uint32_t tx_enqueue_failed;	/**< tx enqueue failures in the FW */
 	uint32_t shaper_enqueue_failed;	/**< shaper enqueue failures in the FW */
 };
@@ -164,37 +161,36 @@ struct nss_tx_rx_virt_if_handle {
 	void *app_data;
 };
 
-/*
- * NSS tx_rx_virt_if statistics APIs
+/**
+ * @brief Get stats for redir interface from NSS driver
+ *
+ * @param if_num Interface number (provided during dynamic_interface allocation)
+ * @param i index of stats
+ * @param line buffer into which the stats will be copied.
+ *
+ * @return int32_t Returns 0 if if_num is not in range or the number of bytes copied.
  */
-extern void nss_tx_rx_virt_if_stats_sync(struct nss_tx_rx_virt_if_handle *handle, struct nss_tx_rx_virt_if_stats *nwis);
-extern void nss_tx_rx_virt_if_stats_dentry_create(void);
+extern int32_t nss_tx_rx_virt_if_copy_stats(int32_t if_num, int i, char *line);
 
 /*
  * CB handlers for variour interfaces
  */
-void nss_phys_if_register_handler(struct nss_ctx_instance *nss_ctx, uint32_t if_num);
-extern void nss_c2c_tx_register_handler(struct nss_ctx_instance *nss_ctx);
-extern void nss_c2c_rx_register_handler(struct nss_ctx_instance *nss_ctx);
+void nss_phys_if_register_handler(uint32_t if_num);
 extern void nss_crypto_register_handler(void);
-extern void nss_crypto_cmn_register_handler(void);
 extern void nss_ipsec_register_handler(void);
 extern void nss_ipv4_register_handler(void);
 extern void nss_ipv4_reasm_register_handler(void);
 extern void nss_ipv6_register_handler(void);
 extern void nss_ipv6_reasm_register_handler(void);
-extern void nss_n2h_register_handler(struct nss_ctx_instance *nss_ctx);
+extern void nss_n2h_register_handler(void);
 extern void nss_tunipip6_register_handler(void);
 extern void nss_pppoe_register_handler(void);
 extern void nss_freq_register_handler(void);
-extern void nss_eth_rx_register_handler(struct nss_ctx_instance *nss_ctx);
-extern void nss_edma_register_handler(void);
+extern void nss_eth_rx_register_handler(void);
 extern void nss_lag_register_handler(void);
-extern void nss_dynamic_interface_register_handler(struct nss_ctx_instance *nss_ctx);
+extern void nss_dynamic_interface_register_handler(void);
 extern void nss_gre_redir_register_handler(void);
-extern void nss_gre_redir_lag_us_register_handler(void);
-extern void nss_gre_redir_lag_ds_register_handler(void);
-extern void nss_lso_rx_register_handler(struct nss_ctx_instance *nss_ctx);
+extern void nss_lso_rx_register_handler(void);
 extern void nss_sjack_register_handler(void);
 extern void nss_wifi_register_handler(void);
 extern struct net_device *nss_tstamp_register_netdev(void);
@@ -202,11 +198,7 @@ extern void nss_tstamp_register_handler(struct net_device *ndev);
 extern void nss_portid_register_handler(void);
 extern void nss_oam_register_handler(void);
 extern void nss_dtls_register_handler(void);
-extern void nss_dtls_cmn_register_handler(void);
 extern void nss_gre_tunnel_register_handler(void);
-extern void nss_trustsec_tx_register_handler(void);
-extern void nss_wifili_register_handler(void);
-extern void nss_ppe_register_handler(void);
 
 /*
  * nss_if_msg_handler()

@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2016-2017 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016 The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -14,132 +14,105 @@
  **************************************************************************
  */
 
-/**
- * @file nss_oam.h
- *	NSS OAM - Operations, Administration and Maintenance Service
+/*
+ * nss_oam.h
+ *	OAM - Operations, Administration and Maintenance Service
+ *
+ * This adapter module is responsible for sending and
+ * receiving to and from NSS FW
+ * This file contains NSS to HLOS interface and msg definitions.
  */
 
 #ifndef __NSS_OAM_H
 #define __NSS_OAM_H
 
-/**
- * @addtogroup nss_oam_subsystem
- * @{
- */
+#define NSS_OAM_FW_VERSION_LEN	132
 
-#define NSS_OAM_FW_VERSION_LEN	132	/**< Size of the OAM firmware version. */
-
-/**
- * nss_oam_msg_types
- *	OAM command types.
+/*
+ * @brief NSS oam command types
  *
- * The OAM proxy sends these command messages to the NSS OAM server via the OAM adapter.
+ * @note These are the command types from oam proxy to nss oam server via oam adapter
  */
 enum nss_oam_msg_types {
-	NSS_OAM_MSG_TYPE_NONE,
-	NSS_OAM_MSG_TYPE_GET_FW_VER,
-	NSS_OAM_MSG_TYPE_MAX,
+	NSS_OAM_MSG_TYPE_NONE,		/**< none */
+	NSS_OAM_MSG_TYPE_GET_FW_VER,	/**< FW Version command*/
+	NSS_OAM_MSG_TYPE_MAX,		/**< Max command */
 };
 
-/**
- * nss_oam_error
- *	OAM error responses.
+/*
+ * @brief NSS oam errors
+ *
+ * @note NSS OAM Errors with response message
  */
 enum nss_oam_error {
-	NSS_OAM_ERROR_NONE,
-	NSS_OAM_ERROR_INVAL_MSG_TYPE,
-	NSS_OAM_ERROR_INVAL_MSG_LEN,
-	NSS_OAM_ERROR_MAX,
+	NSS_OAM_ERROR_NONE,		/**< none */
+	NSS_OAM_ERROR_INVAL_MSG_TYPE,	/**< Invalid message type */
+	NSS_OAM_ERROR_INVAL_MSG_LEN,	/**< Invalid message length */
+	NSS_OAM_ERROR_MAX,		/**< Max command */
 };
 
-/**
- * nss_oam_fw_ver
- *	OAM firmware version.
+/*
+ * @brief nss version
+ *
+ * @note NSS FW version
  */
 struct nss_oam_fw_ver {
-	uint8_t string[NSS_OAM_FW_VERSION_LEN];	/**< OAM firmware version. */
+	uint8_t string[NSS_OAM_FW_VERSION_LEN];	/**< null terminated string*/
 };
 
-/**
- * nss_oam_msg
- *	Data for sending and receiving OAM messages.
+/*
+ * @brief NSS oam message structure
+ *
+ * @note This is common structure shared between
+ * netlink and drv for sending and receiving the
+ *	commands and messages between NSS and hlos
+ *	commands - sent by hlos to nss (Mostly a set, get request)
+ *	messages - sent by nss to hlos (Mostly a response to get set or a notification)
  */
 struct nss_oam_msg {
-	struct nss_cmn_msg cm;	/**< Common message header. */
-
-	/**
-	 * Payload of an OAM message.
-	 */
+	struct nss_cmn_msg cm;
 	union {
 		struct nss_oam_fw_ver fw_ver;
-				/**< Firmware version. */
-	} msg;			/**< Message payload. */
+	} msg;
 };
 
-/**
- * Callback function for receiving OAM messages.
- *
- * @datatypes
- * nss_oam_msg
- *
- * @param[in] app_data  Pointer to the application context of the message.
- * @param[in] msg       Pointer to the message data.
+/*
+ * Callback to be called when oam message is received
  */
 typedef void (*nss_oam_msg_callback_t)(void *app_data, struct nss_oam_msg *msg);
 
-/**
- * nss_oam_tx_msg
- *	Transmits an OAM message to the NSS.
+/*
+ * @brief Transmit an OAM message to the NSS
  *
- * @datatypes
- * nss_ctx_instance \n
- * nss_oam_msg
+ * @param nss_ctx NSS context
+ * @param msg The OAM message
  *
- * @param[in] nss_ctx  Pointer to the NSS context.
- * @param[in] msg      Pointer to the message data.
- *
- * @return
- * Status of the Tx operation
+ * @return nss_tx_status_t The status of the Tx operation
  */
 extern nss_tx_status_t nss_oam_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_oam_msg *msg);
 
-/**
- * nss_oam_notify_register
- *	Registers a notifier callback with the NSS for sending and receiving OAM messages.
+/*
+ * @brief Register a notifier callback for OAM messages from NSS
  *
- * @datatypes
- * nss_oam_msg_callback_t
+ * @param cb The callback pointer
+ * @param app_data The application context for this message
  *
- * @param[in] cb        Callback function for the message.
- * @param[in] app_data  Pointer to the application context of the message.
- *
- * @return
- * Pointer to the NSS core context.
+ * @return struct nss_ctx_instance * The NSS context
  */
 extern struct nss_ctx_instance *nss_oam_notify_register(nss_oam_msg_callback_t cb, void *app_data);
 
-/**
- * nss_oam_notify_unregister
- *	Deregisters an OAM message notifier callback from the NSS.
+/*
+ * @brief Un-Register a notifier callback for OAM messages from NSS
  *
- * @return
- * None.
+ * @return None
  */
 extern void nss_oam_notify_unregister(void);
 
-/**
- * nss_register_oam_if
- *	Registers the OAM interface handler with the NSS.
+/*
+ * @brief OAM interface Handler
  *
- * @param[in] if_number  Interface number of the OAM interface.
- *
- * @return
- * Boolean status of handler registration
+ * @return Boolean status of handler registration
  */
 extern bool nss_register_oam_if(uint16_t if_number);
-
-/**
- * @}
- */
 
 #endif /* __NSS_OAM_H */

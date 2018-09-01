@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -77,8 +77,9 @@ static int nss_panic_handler(struct notifier_block *nb,
 		if (nss_ctx->state & NSS_CORE_STATE_FW_DEAD || !nss_ctx->nmap)
 			continue;
 		nss_ctx->state |= NSS_CORE_STATE_PANIC;
-		nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_TRIGGER_COREDUMP);
-		nss_warning("panic call NSS FW %p to dump %x\n",
+		nss_hal_send_interrupt(nss_ctx->nmap, 0,
+			NSS_REGS_H2N_INTR_STATUS_TRIGGER_COREDUMP);
+		nss_warning("panic call NSS FW %x to dump %x\n",
 			nss_ctx->nmap, nss_ctx->state);
 	}
 
@@ -132,7 +133,7 @@ void nss_fw_coredump_notify(struct nss_ctx_instance *nss_own,
 				int intr __attribute__ ((unused)))
 {
 	int i;
-	nss_warning("\n%p: COREDUMP %x Baddr %p stat %x\n",
+	nss_warning("\n%p: COREDUMP %x Baddr %x stat %x\n",
 			nss_own, intr, nss_own->nmap, nss_own->state);
 	nss_own->state |= NSS_CORE_STATE_FW_DEAD;
 	queue_delayed_work(coredump_workqueue, &coredump_queuewait,
@@ -151,25 +152,16 @@ void nss_fw_coredump_notify(struct nss_ctx_instance *nss_own,
 		if (nss_ctx != nss_own) {
 			if (nss_ctx->state & NSS_CORE_STATE_FW_DEAD ||
 					!nss_ctx->nmap) {
-				if (nss_cmd_buf.coredump & 0xFFFFFFFE) {
-					/*
-					 * bit 1 is used for testing coredump. Any other
-					 * bit(s) (value other than 0/1) disable panic
-					 * in order to use mdump utility: see mdump/src/README
-					 * for more info.
-					 */
-					nss_info_always("NSS core dump completed and please use mdump to collect dump data\n");
-				} else {
-					/*
-					 * cannot call atomic_notifier_chain_unregister?
-					 * (&panic_notifier_list, &nss_panic_nb);
-					 */
-					panic("NSS FW coredump: bringing system down\n");
-				}
+				/*
+				 * cannot call atomic_notifier_chain_unregister?
+				 * (&panic_notifier_list, &nss_panic_nb);
+				 */
+				panic("NSS FW coredump: bringing system down\n");
 			}
-			nss_warning("notify NSS FW %p for coredump\n",
+			nss_warning("notify NSS FW %X for coredump\n",
 				nss_ctx->nmap);
-			nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_TRIGGER_COREDUMP);
+			nss_hal_send_interrupt(nss_ctx->nmap, 0,
+				NSS_REGS_H2N_INTR_STATUS_TRIGGER_COREDUMP);
 		}
 	}
 }

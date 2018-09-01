@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -37,7 +37,6 @@
 #include <linux/workqueue.h>
 #include <linux/phy.h>
 #include <linux/net_tstamp.h>
-#include <asm/div64.h>
 
 #ifdef CONFIG_OF
 #include <linux/of.h>
@@ -139,27 +138,6 @@ uint32_t nss_gmac_wakeup_filter_config3[] = {
 	0x7eED0000,	/* No significance of CRC for Filter0,
 			   Filter1 CRC is 0x7EED,                             */
 	0x00000000	/* No significance of CRC for Filter2 and Filter3     */
-};
-
-/**
- * Sysctl flag objects for enabling/resetting per-precedence stats
- */
-static struct ctl_table gmac_table[] = {
-	{
-		.procname       = "per_prec_stats_enable",
-		.data           = &ctx.nss_gmac_per_prec_stats_enable,
-		.maxlen         = sizeof(int),
-		.mode           = 0644,
-		.proc_handler   = nss_gmac_per_prec_stats_enable_handler
-	},
-	{
-		.procname       = "per_prec_stats_reset",
-		.data           = &ctx.nss_gmac_per_prec_stats_reset,
-		.maxlen         = sizeof(int),
-		.mode           = 0644,
-		.proc_handler   = nss_gmac_per_prec_stats_reset_handler
-	},
-	{}
 };
 
 /**
@@ -318,36 +296,19 @@ void nss_gmac_tx_rx_desc_init(struct nss_gmac_dev *gmacdev)
  * @param[in] pointer to net_device_stats64 structure.
  * @return Returns pointer to net_device_stats64 structure.
  */
-static void nss_gmac_get_stats64(struct net_device *netdev,
+struct rtnl_link_stats64 *nss_gmac_get_stats64(struct net_device *netdev,
 						struct rtnl_link_stats64 *stats)
 {
-	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+	struct nss_gmac_dev *gmacdev = NULL;
+
+	gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
 	BUG_ON(gmacdev == NULL);
 
-	if (!gmacdev->data_plane_ops)
-		return;
-
 	spin_lock_bh(&gmacdev->stats_lock);
-	gmacdev->data_plane_ops->get_stats(gmacdev->data_plane_ctx, &gmacdev->nss_stats);
-	stats->rx_packets = gmacdev->nss_stats.rx_packets;
-	stats->rx_bytes = gmacdev->nss_stats.rx_bytes;
-	stats->rx_errors = gmacdev->nss_stats.rx_errors;
-	stats->rx_dropped = gmacdev->nss_stats.rx_errors;
-	stats->rx_length_errors = gmacdev->nss_stats.rx_length_errors;
-	stats->rx_over_errors = gmacdev->nss_stats.rx_overflow_errors;
-	stats->rx_crc_errors = gmacdev->nss_stats.rx_crc_errors;
-	stats->rx_frame_errors = gmacdev->nss_stats.rx_dribble_bit_errors;
-	stats->rx_fifo_errors = gmacdev->nss_stats.fifo_overflows;
-	stats->rx_missed_errors = gmacdev->nss_stats.rx_missed;
-	stats->collisions = gmacdev->nss_stats.tx_collisions + gmacdev->nss_stats.rx_late_collision_errors;
-	stats->tx_packets = gmacdev->nss_stats.tx_packets;
-	stats->tx_bytes = gmacdev->nss_stats.tx_bytes;
-	stats->tx_errors = gmacdev->nss_stats.tx_errors;
-	stats->tx_dropped = gmacdev->nss_stats.tx_dropped;
-	stats->tx_carrier_errors = gmacdev->nss_stats.tx_loss_of_carrier_errors + gmacdev->nss_stats.tx_no_carrier_errors;
-	stats->tx_fifo_errors = gmacdev->nss_stats.tx_underflow_errors;
-	stats->tx_window_errors = gmacdev->nss_stats.tx_late_collision_errors;
+	memcpy(stats, &gmacdev->stats, sizeof(*stats));
 	spin_unlock_bh(&gmacdev->stats_lock);
+
+	return stats;
 }
 
 
@@ -360,9 +321,10 @@ static void nss_gmac_get_stats64(struct net_device *netdev,
 static int32_t nss_gmac_set_mac_address(struct net_device *netdev,
 					      void *macaddr)
 {
-	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+	struct nss_gmac_dev *gmacdev = NULL;
 	struct sockaddr *addr = (struct sockaddr *)macaddr;
 
+	gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
 	BUG_ON(gmacdev == NULL);
 	BUG_ON(gmacdev->netdev != netdev);
 
@@ -583,7 +545,7 @@ static int nss_gmac_cadj(struct device *dev, struct device_attribute *attr, cons
 static int nss_gmac_fadj(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(to_net_dev(dev));
-	uint64_t offset = 0;
+	int64_t offset = 0;
 	uint64_t direction = 0;
 	uint32_t sec;
 	uint32_t nsec;
@@ -670,9 +632,11 @@ static void nss_gmac_tstamp_sysfs_remove(struct net_device *dev)
  */
 static int nss_gmac_mdio_mii_ioctl_read(struct net_device *netdev, int phy_addr, int mmd, uint16_t addr)
 {
-	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+	struct nss_gmac_dev *gmacdev = NULL;
 	uint16_t val_out = 0;
 	uint32_t reg = 0;
+
+	gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
 
 	if (!gmacdev)
 		return -EIO;
@@ -708,9 +672,11 @@ static int nss_gmac_mdio_mii_ioctl_read(struct net_device *netdev, int phy_addr,
 static int nss_gmac_mdio_mii_ioctl_write(struct net_device *netdev, int phy_addr, int mmd,
 				uint16_t addr, uint16_t value)
 {
-	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+	struct nss_gmac_dev *gmacdev = NULL;
 	int err = 0;
 	uint32_t reg = 0;
+
+	gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
 
 	if (!gmacdev)
 		return -EIO;
@@ -744,7 +710,9 @@ static int nss_gmac_mdio_mii_ioctl_write(struct net_device *netdev, int phy_addr
 static uint32_t nss_gmac_tstamp_ioctl(struct net_device *netdev, struct ifreq *ifr)
 {
 	struct hwtstamp_config  *cfg  = (struct hwtstamp_config *) ifr->ifr_data;
-	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+	struct nss_gmac_dev *gmacdev = NULL;
+
+	gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
 
 	/* Return if NSS FW is not up */
 	if (gmacdev->data_plane_ctx == netdev) {
@@ -791,7 +759,7 @@ static int32_t nss_gmac_do_ioctl(struct net_device *netdev,
 				       struct ifreq *ifr, int32_t cmd)
 {
 	int ret = -EINVAL;
-	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+	struct nss_gmac_dev *gmacdev = NULL;
 #ifdef CONFIG_MDIO
 	struct mii_ioctl_data *mii_data = NULL;
 #endif
@@ -801,6 +769,7 @@ static int32_t nss_gmac_do_ioctl(struct net_device *netdev,
 	if (ifr == NULL)
 		return -EINVAL;
 
+	gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
 	BUG_ON(gmacdev == NULL);
 	BUG_ON(gmacdev->netdev != netdev);
 
@@ -836,7 +805,9 @@ static int32_t nss_gmac_do_ioctl(struct net_device *netdev,
  */
 static void nss_gmac_set_rx_mode(struct net_device *netdev)
 {
-	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+	struct nss_gmac_dev *gmacdev = NULL;
+
+	gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
 	BUG_ON(gmacdev == NULL);
 
 	netdev_dbg(netdev, "%s: flags - 0x%x\n", __func__, netdev->flags);
@@ -864,9 +835,10 @@ static void nss_gmac_set_rx_mode(struct net_device *netdev)
 static int32_t nss_gmac_set_features(struct net_device *netdev,
 					       netdev_features_t features)
 {
-	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+	struct nss_gmac_dev *gmacdev = NULL;
 	netdev_features_t changed;
 
+	gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
 	BUG_ON(gmacdev == NULL);
 
 	changed = features ^ netdev->features;
@@ -920,8 +892,8 @@ static const struct net_device_ops nss_gmac_netdev_ops = {
  */
 static void nss_gmac_update_features(uint32_t *supp, uint32_t *adv)
 {
-	*supp |= NSS_GMAC_SUPPORTED_FEATURES;
-	*adv |= NSS_GMAC_ADVERTISED_FEATURES;
+	*supp &= NSS_GMAC_SUPPORTED_FEATURES;
+	*adv &= NSS_GMAC_ADVERTISED_FEATURES;
 }
 
 
@@ -958,8 +930,10 @@ static int32_t nss_gmac_of_get_pdata(struct device_node *np,
 				     struct msm_nss_gmac_platform_data *gmaccfg)
 {
 	uint8_t *maddr = NULL;
-	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+	struct nss_gmac_dev *gmacdev = NULL;
 	struct resource memres_devtree = {0};
+
+	gmacdev = netdev_priv(netdev);
 
 	if (of_property_read_u32(np, "qcom,id", &gmacdev->macid)
 		|| of_property_read_u32(np, "qcom,phy-mdio-addr",
@@ -1043,7 +1017,7 @@ static int32_t nss_gmac_do_common_init(struct platform_device *pdev)
 	/*
 	 * Enable clock control for MSM Boards with DT support
 	 */
-	ctx.msm_clk_ctl_enabled = !!(of_machine_is_compatible("qcom,ipq8064") || of_machine_is_compatible("qcom,ipq8065"));
+	ctx.msm_clk_ctl_enabled = !!of_machine_is_compatible("qcom,ipq8064");
 #else
 	res_nss_base.start = NSS_REG_BASE;
 	res_nss_base.end = NSS_REG_BASE + NSS_REG_LEN - 1;
@@ -1092,25 +1066,11 @@ static int32_t nss_gmac_do_common_init(struct platform_device *pdev)
 	pr_debug("%s: Clk control base ioremap OK, vaddr = 0x%p\n", __func__,
 							ctx.clk_ctl_base);
 
-	ctx.gmac_ctl_table_header = register_net_sysctl(&init_net,
-							"net/gmac",
-							gmac_table);
-
-	if (!ctx.gmac_ctl_table_header) {
-		pr_info("Unable to register GMAC sysctl table\n");
-		goto nss_gmac_clkctl_map_err;
-	}
-
 	if (nss_gmac_common_init(&ctx) == 0) {
 		ret = 0;
 		ctx.common_init_done = true;
 		goto nss_gmac_cmn_init_ok;
 	}
-
-	/* If we are reaching here then something has gone wrong.
-	 * We need to unregister the sysctl table in the case.
-	 */
-	unregister_net_sysctl_table(ctx.gmac_ctl_table_header);
 
 nss_gmac_clkctl_map_err:
 	iounmap(ctx.qsgmii_base);
@@ -1496,6 +1456,7 @@ static int nss_gmac_remove(struct platform_device *pdev)
 
 static struct of_device_id nss_gmac_dt_ids[] = {
 	{ .compatible =  "qcom,nss-gmac" },
+	{ .compatible =  "qcom,ipq806x-gmac" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, nss_gmac_dt_ids);
@@ -1634,5 +1595,6 @@ module_init(nss_gmac_host_interface_init);
 module_exit(nss_gmac_host_interface_exit);
 
 MODULE_AUTHOR("Qualcomm Atheros");
-MODULE_LICENSE("Dual BSD/GPL");
+MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("NSS GMAC Network Driver");
+

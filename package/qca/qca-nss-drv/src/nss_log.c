@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -105,7 +105,7 @@ static int nss_log_open(struct inode *inode, struct file *filp)
 	/*
 	 * i_private is passed to us by debug_fs_create()
 	 */
-	nss_id = (int)(nss_ptr_t)inode->i_private;
+	nss_id = (int)inode->i_private;
 	if (nss_id < 0 || nss_id >= NSS_MAX_CORES) {
 		nss_warning("nss_id is not valid :%d\n", nss_id);
 		return -ENODEV;
@@ -354,9 +354,9 @@ static void nss_debug_interface_handler(struct nss_ctx_instance *nss_ctx, struct
 	/*
 	 * Update the callback and app_data for NOTIFY messages.
 	 */
-	if (ncm->response == NSS_CMN_RESPONSE_NOTIFY) {
-		ncm->cb = (nss_ptr_t)nss_debug_interface_cb;
-		ncm->app_data = (nss_ptr_t)nss_debug_interface_app_data;
+	if (ncm->response == NSS_CMM_RESPONSE_NOTIFY) {
+		ncm->cb = (uint32_t)nss_debug_interface_cb;
+		ncm->app_data = (uint32_t)nss_debug_interface_app_data;
 	}
 
 	/*
@@ -377,7 +377,15 @@ static void nss_debug_interface_handler(struct nss_ctx_instance *nss_ctx, struct
  */
 static nss_tx_status_t nss_debug_interface_tx(struct nss_ctx_instance *nss_ctx, struct nss_debug_interface_msg *msg)
 {
+	struct nss_debug_interface_msg *nm;
 	struct nss_cmn_msg *ncm = &msg->cm;
+	struct sk_buff *nbuf;
+	int32_t status;
+
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: debug if msg dropped as core not ready", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
 
 	/*
 	 * Sanity check the message
@@ -392,7 +400,36 @@ static nss_tx_status_t nss_debug_interface_tx(struct nss_ctx_instance *nss_ctx, 
 		return NSS_TX_FAILURE;
 	}
 
-	return nss_core_send_cmd(nss_ctx, msg, sizeof(*msg), NSS_NBUF_PAYLOAD_SIZE);
+	if (nss_cmn_get_msg_len(ncm) > sizeof(struct nss_debug_interface_msg)) {
+		nss_warning("%p: message length is invalid: %d", nss_ctx, nss_cmn_get_msg_len(ncm));
+		return NSS_TX_FAILURE;
+	}
+
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
+		nss_warning("%p: msg dropped as command allocation failed", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	/*
+	 * Copy the message to our skb
+	 */
+	nm = (struct nss_debug_interface_msg *)skb_put(nbuf, sizeof(struct nss_debug_interface_msg));
+	memcpy(nm, msg, sizeof(struct nss_debug_interface_msg));
+
+	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (status != NSS_CORE_STATUS_SUCCESS) {
+		dev_kfree_skb_any(nbuf);
+		nss_warning("%p: Unable to enqueue 'debug if message' \n", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	nss_hal_send_interrupt(nss_ctx->nmap, nss_ctx->h2n_desc_rings[NSS_IF_CMD_QUEUE].desc_ring.int_bit,
+				NSS_REGS_H2N_INTR_STATUS_DATA_COMMAND_QUEUE);
+
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_REQ]);
+	return NSS_TX_SUCCESS;
 }
 
 /*
@@ -435,8 +472,8 @@ bool nss_debug_log_buffer_alloc(uint8_t nss_id, uint32_t nentry)
 	}
 
 	memset(addr, 0, size);
-	dma_addr = (uint32_t)dma_map_single(nss_ctx->dev, addr, size, DMA_FROM_DEVICE);
-	if (unlikely(dma_mapping_error(nss_ctx->dev, dma_addr))) {
+	dma_addr = (uint32_t)dma_map_single(NULL, addr, size, DMA_FROM_DEVICE);
+	if (unlikely(dma_mapping_error(NULL, dma_addr))) {
 		nss_warning("%p: Failed to map address in DMA", nss_ctx);
 		goto fail2;
 	}
@@ -521,7 +558,7 @@ bool nss_debug_log_buffer_alloc(uint8_t nss_id, uint32_t nentry)
 
 			old_size = sizeof (struct nss_log_descriptor) +
 				(sizeof (struct nss_log_entry) * old_rbe.nentries);
-			dma_unmap_single(nss_ctx->dev, old_rbe.dma_addr, old_size, DMA_FROM_DEVICE);
+			dma_unmap_single(NULL, old_rbe.dma_addr, old_size, DMA_FROM_DEVICE);
 			kfree(old_rbe.addr);
 		} else {
 			/*
@@ -577,7 +614,6 @@ fail2:
 int nss_logbuffer_handler(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	int ret;
-	int core_status;
 	int i;
 
 	ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
@@ -596,14 +632,6 @@ int nss_logbuffer_handler(struct ctl_table *ctl, int write, void __user *buffer,
 	}
 
 	for (i = 0; i < NSS_MAX_CORES; i++) {
-		/*
-		 * Register the callback handler and allocate the debug log buffers
-		 */
-		core_status = nss_core_register_handler(&nss_top_main.nss[i], NSS_DEBUG_INTERFACE, nss_debug_interface_handler, NULL);
-		if (core_status != NSS_CORE_STATUS_SUCCESS) {
-			nss_warning("NSS logbuffer init failed with register handler:%d\n", core_status);
-		}
-
 		if (nss_debug_log_buffer_alloc(i, nss_ctl_logbuf) == false) {
 			nss_warning("%d: Failed to set debug log buffer on NSS core", i);
 		}
@@ -618,9 +646,8 @@ int nss_logbuffer_handler(struct ctl_table *ctl, int write, void __user *buffer,
  */
 void nss_log_init(void)
 {
+	int core_status;
 	int i;
-	struct dentry *logs_dentry;
-	struct dentry *core_log_dentry;
 
 	memset(nss_rbe, 0, sizeof(nss_rbe));
 	init_waitqueue_head(&nss_log_wq);
@@ -629,8 +656,8 @@ void nss_log_init(void)
 	/*
 	 * Create directory for obtaining NSS FW logs from each core
 	 */
-	logs_dentry = debugfs_create_dir("logs", nss_top_main.top_dentry);
-	if (unlikely(!logs_dentry)) {
+	nss_top_main.logs_dentry = debugfs_create_dir("logs", nss_top_main.top_dentry);
+	if (unlikely(!nss_top_main.logs_dentry)) {
 		nss_warning("Failed to create qca-nss-drv/logs directory in debugfs");
 		return;
 	}
@@ -640,13 +667,17 @@ void nss_log_init(void)
 		extern struct file_operations nss_logs_core_ops;
 
 		snprintf(file, sizeof(file), "core%d", i);
-		core_log_dentry = debugfs_create_file(file, 0400,
-						logs_dentry, (void *)(nss_ptr_t)i, &nss_logs_core_ops);
-		if (unlikely(!core_log_dentry)) {
+		nss_top_main.core_log_dentry = debugfs_create_file(file, 0400,
+						nss_top_main.logs_dentry, (void *)i, &nss_logs_core_ops);
+		if (unlikely(!nss_top_main.core_log_dentry)) {
 			nss_warning("Failed to create qca-nss-drv/logs/%s file in debugfs", file);
 			return;
 		}
 	}
 
 	nss_debug_interface_set_callback(nss_debug_interface_event, NULL);
+	core_status = nss_core_register_handler(NSS_DEBUG_INTERFACE, nss_debug_interface_handler, NULL);
+	if (core_status != NSS_CORE_STATUS_SUCCESS) {
+		nss_warning("NSS logbuffer init failed with register handler:%d\n", core_status);
+	}
 }

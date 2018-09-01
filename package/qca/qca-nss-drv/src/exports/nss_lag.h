@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2014, 2015, 2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014,2015, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -15,18 +15,12 @@
  */
 
 /**
- * @file nss_lag.h
+ * nss_lag.h
  *	NSS LAG APIs
  */
 
 /**
- * @addtogroup nss_lag_subsystem
- * @{
- */
-
-/**
- * nss_lag_metadata_types
- *	Types of LAG metadata.
+ * NSS LAG messages
  */
 enum nss_lag_metadata_types {
 	NSS_TX_METADATA_LAG_STATE_CHANGE = 0,
@@ -34,8 +28,7 @@ enum nss_lag_metadata_types {
 };
 
 /**
- * nss_lag_state_change_ev
- *	LAG change events.
+ * NSS LAG state change events
  */
 enum nss_lag_state_change_ev {
 	NSS_LAG_RELEASE = 0,
@@ -43,8 +36,7 @@ enum nss_lag_state_change_ev {
 };
 
 /**
- * nss_lag_error_types
- *	LAG return values.
+ * LAG return values
  */
 enum nss_lag_error_types {
 	NSS_LAG_ERROR_EINTERFACE = 1,
@@ -52,101 +44,63 @@ enum nss_lag_error_types {
 };
 
 /**
- * nss_lag_state_change
- *	Link aggregation (LAG) state changes.
+ * NSS LAG state change message
  */
 struct nss_lag_state_change {
-	uint32_t lagid;				/**< ID of the link aggregation group. */
-	uint32_t interface;
-			/**< Physical interface on which the state change occurred. */
-	enum nss_lag_state_change_ev event;	/**< Type of state change event. */
+	uint32_t lagid;					/**< LAG group id */
+	uint32_t interface;				/**< Physical interface on which state change happened */
+	enum nss_lag_state_change_ev event;		/**< State change event */
 };
 
 /**
- * nss_lag_msg
- *	Data for sending and receiving LAG messages.
+ * Message structure to send/receive Link aggregation messages
  */
 struct nss_lag_msg {
-	struct nss_cmn_msg cm;	/**< Common message header. */
-
-	/**
-	 * Payload of a LAG message.
-	 */
+	struct nss_cmn_msg cm;				/**< Message Header */
 	union {
-		struct nss_lag_state_change state;
-				/**< State change message. */
-	} msg;			/**< Message payload for LAG configuration messages exchanged with NSS core. */
+		struct nss_lag_state_change state;	/**< Message: state change */
+	} msg;
 };
 
 /**
- * nss_lag_tx
- *	Sends a LAG message to the NSS.
+ * @brief Send LAG message
  *
- * @datatypes
- * nss_ctx_instance \n
- * nss_lag_msg
+ * @param nss_ctx NSS context
+ * @param msg NSS LAG message
  *
- * @param[in] nss_ctx  Pointer to the NSS context.
- * @param[in] msg      Pointer to the message data.
- *
- * @return
- * Status of the Tx operation.
+ * @return nss_tx_status_t Tx status
  */
 extern nss_tx_status_t nss_lag_tx(struct nss_ctx_instance *nss_ctx, struct nss_lag_msg *msg);
 
 /**
- * Callback function for receiving LAG data.
+ * @brief Callback to receive LAG data
  *
- * @datatypes
- * net_device \n
- * sk_buff \n
- * napi_struct
+ * @param app_data Application context for this message
+ * @param msg Data buffer
  *
- * @param[in] dev   Pointer to the associated network device.
- * @param[in] skb   Pointer to the data socket buffer.
- * @param[in] napi  Pointer to the NAPI structure.
+ * @return void
  */
 typedef void (*nss_lag_callback_t)(struct net_device *dev, struct sk_buff *skb, struct napi_struct *napi);
 
 /**
- * Callback function for receiving a LAG message.
+ * @brief Callback to receive LAG events
  *
- * @datatypes
- * nss_lag_msg
+ * @param app_data Application context for this message
+ * @param msg NSS LAG message
  *
- * @param[in] ctx  Pointer to the application context for this message.
- * @param[in] nm   Pointer to the message data.
- */
-typedef void (*nss_lag_msg_callback_t)(void *ctx, struct nss_lag_msg *nm);
-
-/**
- * Callback function for receiving a LAG event.
- *
- * @datatypes
- * nss_lag_msg
- *
- * @param[in] app_data  Pointer to the application context of the message.
- * @param[in] msg       Pointer to the message data.
+ * @return void
  */
 typedef void (*nss_lag_event_callback_t)(void *app_data, struct nss_lag_msg *msg);
 
 /**
- * nss_register_lag_if
- *	Registers the LAG interface with the NSS for sending and receiving data
- *	and messages.
+ * @brief Reigster with NSS to send/receive LAG data/messages
  *
- * @datatypes
- * nss_lag_callback_t \n
- * nss_lag_event_callback_t \n
- * net_device
+ * @param if_num
+ * @param lag_cb Callback to receive LAG data
+ * @param lag_ev_cb Callback to receive LAG events
+ * @param netdev netdevice associated with the LAG interface
  *
- * @param[in] if_num     NSS interface number.
- * @param[in] lag_cb     Callback to receive LAG data.
- * @param[in] lag_ev_cb  Callback to receive LAG events.
- * @param[in] netdev     Pointer to the associated network device.
- *
- * @return
- * Pointer to the NSS core context.
+ * @return void * NSS context applicable to LAG
  */
 extern void *nss_register_lag_if(uint32_t if_num,
 			 nss_lag_callback_t lag_cb,
@@ -154,58 +108,18 @@ extern void *nss_register_lag_if(uint32_t if_num,
 			 struct net_device *netdev);
 
 /**
- * nss_unregister_lag_if
- *	Deregisters the LAG interface from the NSS.
+ * @brief Unreigster LAG interface with NSS
  *
- * @param[in] if_num  LAG interface number
+ * @param if_num LAG interface number
  *
- * @return
- * None.
- *
- * @dependencies
- * The LAG interface must have been previously registered.
+ * @return void
  */
 extern void nss_unregister_lag_if(uint32_t if_num);
 
 /**
- * nss_lag_msg_init
- *	Initializes a LAG message.
+ * @brief Initialize lag message
  *
- * @datatypes
- * nss_lag_msg \n
- * nss_lag_msg_callback_t
- *
- * @param[in,out] nlm       Pointer to the message.
- * @param[in]     lag_num   LAG interface number.
- * @param[in]     type      Type of buffer.
- * @param[in]     len       Length of the buffer.
- * @param[in]     cb        Callback function for the message.
- * @param[in]     app_data  Pointer to the application context of the message.
- *
- * @return
- * None.
+ * return void
  */
 extern void nss_lag_msg_init(struct nss_lag_msg *nlm, uint16_t lag_num, uint32_t type, uint32_t len,
-				nss_lag_msg_callback_t cb, void *app_data);
-
-/**
- * nss_lag_tx_slave_state
- *	Sends LAG slave state.
- *
- * @datatypes
- * nss_lag_state_change_ev
- *
- * @param[in] lagid        LAG Group ID.
- * @param[in] slave_ifnum  Slave interface number.
- * @param[in] slave_state  Slave state.
- *
- * @return
- * Status of the Tx operation.
- */
-extern nss_tx_status_t nss_lag_tx_slave_state(uint16_t lagid,
-		int32_t slave_ifnum,
-		enum nss_lag_state_change_ev slave_state);
-
-/**
- * @}
- */
+				nss_lag_callback_t cb, void *app_data);

@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2014-2017 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2016 The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -26,32 +26,18 @@
 #include "nss_tx_rx_common.h"
 
 /*
- * nss_cmn_response_str
- *	Common response structure string
- */
-int8_t *nss_cmn_response_str[NSS_CMN_RESPONSE_LAST] = {
-	"Message Acknowledge without errors",
-	"Common message version not supported",
-	"Unknown Interface",
-	"Length Error",
-	"Message Error",
-	"FW Notification Message",
-};
-
-/*
  * nss_cmn_msg_init()
  *	Initialize the common message structure.
  */
-void nss_cmn_msg_init(struct nss_cmn_msg *ncm, uint32_t if_num, uint32_t type,  uint32_t len, void *cb, void *app_data)
+void nss_cmn_msg_init(struct nss_cmn_msg *ncm, uint16_t if_num, uint32_t type,  uint32_t len, void *cb, void *app_data)
 {
 	ncm->interface = if_num;
 	ncm->version = NSS_HLOS_MESSAGE_VERSION;
 	ncm->type = type;
 	ncm->len = len;
-	ncm->cb = (nss_ptr_t)cb;
-	ncm->app_data = (nss_ptr_t)app_data;
+	ncm->cb = (uint32_t)cb;
+	ncm->app_data = (uint32_t)app_data;
 }
-EXPORT_SYMBOL(nss_cmn_msg_init);
 
 /*
  * nss_cmn_get_interface_number()
@@ -83,7 +69,6 @@ int32_t nss_cmn_get_interface_number(struct nss_ctx_instance *nss_ctx, struct ne
 	nss_warning("%p: Interface number could not be found as interface has not registered yet", nss_ctx);
 	return -1;
 }
-EXPORT_SYMBOL(nss_cmn_get_interface_number);
 
 /*
  * nss_cmn_get_interface_dev()
@@ -107,33 +92,6 @@ struct net_device *nss_cmn_get_interface_dev(struct nss_ctx_instance *ctx, uint3
 
 	return nss_ctx->subsys_dp_register[if_num].ndev;
 }
-EXPORT_SYMBOL(nss_cmn_get_interface_dev);
-
-/*
- * nss_cmn_get_interface_number_by_dev_and_type()
- *	Return the NSS interface id for the net_device.
- *
- * Returns < 0 on failure or the NSS interface id for the given device and type.
- */
-int32_t nss_cmn_get_interface_number_by_dev_and_type(struct net_device *dev, uint32_t type)
-{
-	int i, core;
-	struct nss_subsystem_dataplane_register *nsdr;
-
-	nss_assert(dev != 0);
-	for (core = 0; core < NSS_MAX_CORES; core++) {
-		for (i = 0; i < NSS_MAX_NET_INTERFACES; i++) {
-			nsdr = &nss_top_main.nss[core].subsys_dp_register[i];
-			if (dev == nsdr->ndev && type == nsdr->type) {
-				return i;
-			}
-		}
-	}
-
-	nss_warning("Interface number could not be found for %p (%s) as interface has not registered yet", dev, dev->name);
-	return -1;
-}
-EXPORT_SYMBOL(nss_cmn_get_interface_number_by_dev_and_type);
 
 /*
  * nss_cmn_get_interface_number_by_dev()
@@ -143,9 +101,24 @@ EXPORT_SYMBOL(nss_cmn_get_interface_number_by_dev_and_type);
  */
 int32_t nss_cmn_get_interface_number_by_dev(struct net_device *dev)
 {
-	return nss_cmn_get_interface_number_by_dev_and_type(dev, 0);
+	int i, core;
+
+	nss_assert(dev != 0);
+
+	/*
+	 * Check physical interface table on both cores
+	 */
+	for (core = 0; core < NSS_MAX_CORES; core++) {
+		for (i = 0; i < NSS_MAX_NET_INTERFACES; i++) {
+			if (dev == nss_top_main.nss[core].subsys_dp_register[i].ndev) {
+				return i;
+			}
+		}
+	}
+
+	nss_warning("Interface number could not be found for %p (%s) as interface has not registered yet", dev, dev->name);
+	return -1;
 }
-EXPORT_SYMBOL(nss_cmn_get_interface_number_by_dev);
 
 /*
  * nss_cmn_get_state()
@@ -165,37 +138,17 @@ nss_state_t nss_cmn_get_state(struct nss_ctx_instance *ctx)
 
 	return state;
 }
-EXPORT_SYMBOL(nss_cmn_get_state);
 
 /*
- * nss_cmn_interface_is_redirect()
- * 	Return true if the interface is a redirect interface.
+ * nss_cmn_interface_is_virtual()
+ * 	Return true if the interface number is a virtual NSS interface
  */
-bool nss_cmn_interface_is_redirect(struct nss_ctx_instance *nss_ctx, int32_t interface_num)
+bool nss_cmn_interface_is_virtual(void *nss_ctx, int32_t interface_num)
 {
-	enum nss_dynamic_interface_type type = nss_dynamic_interface_get_type(nss_ctx, interface_num);
-
-	return type == NSS_DYNAMIC_INTERFACE_TYPE_WIFI
-		|| type == NSS_DYNAMIC_INTERFACE_TYPE_802_3_REDIR_N2H
-		|| type == NSS_DYNAMIC_INTERFACE_TYPE_802_3_REDIR_H2N
-		|| type == NSS_DYNAMIC_INTERFACE_TYPE_VIRTIF_DEPRECATED;
+	return ((nss_dynamic_interface_get_type(interface_num) == NSS_DYNAMIC_INTERFACE_TYPE_WIFI)
+		|| (nss_dynamic_interface_get_type(interface_num) == NSS_DYNAMIC_INTERFACE_TYPE_802_3_REDIR)
+		|| (nss_dynamic_interface_get_type(interface_num) == NSS_DYNAMIC_INTERFACE_TYPE_VIRTIF_DEPRECATED));
 }
-EXPORT_SYMBOL(nss_cmn_interface_is_redirect);
-
-/*
- * nss_cmn_rx_dropped_sum()
- *	Sum rx_dropped count.
- */
-uint32_t nss_cmn_rx_dropped_sum(struct nss_cmn_node_stats *node_stats)
-{
-	uint32_t sum = 0;
-	int i;
-	for (i = 0; i < NSS_MAX_NUM_PRI; i++) {
-		sum += node_stats->rx_dropped[i];
-	}
-	return sum;
-}
-EXPORT_SYMBOL(nss_cmn_rx_dropped_sum);
 
 /*
  * nss_cmn_register_queue_decongestion()
@@ -223,7 +176,6 @@ nss_cb_register_status_t nss_cmn_register_queue_decongestion(struct nss_ctx_inst
 	spin_unlock_bh(&nss_ctx->decongest_cb_lock);
 	return NSS_CB_REGISTER_FAILED;
 }
-EXPORT_SYMBOL(nss_cmn_register_queue_decongestion);
 
 /*
  * nss_cmn_unregister_queue_decongestion()
@@ -251,7 +203,6 @@ nss_cb_unregister_status_t nss_cmn_unregister_queue_decongestion(struct nss_ctx_
 	spin_unlock_bh(&nss_ctx->decongest_cb_lock);
 	return NSS_CB_UNREGISTER_FAILED;
 }
-EXPORT_SYMBOL(nss_cmn_unregister_queue_decongestion);
 
 /*
  * nss_cmn_get_nss_enabled()
@@ -276,4 +227,15 @@ bool nss_cmn_get_nss_enabled(void)
 #endif
 	return true;
 }
+
+EXPORT_SYMBOL(nss_cmn_get_interface_number);
+EXPORT_SYMBOL(nss_cmn_get_interface_dev);
+EXPORT_SYMBOL(nss_cmn_get_state);
+EXPORT_SYMBOL(nss_cmn_interface_is_virtual);
+EXPORT_SYMBOL(nss_cmn_msg_init);
+EXPORT_SYMBOL(nss_cmn_get_interface_number_by_dev);
+
+EXPORT_SYMBOL(nss_cmn_register_queue_decongestion);
+EXPORT_SYMBOL(nss_cmn_unregister_queue_decongestion);
 EXPORT_SYMBOL(nss_cmn_get_nss_enabled);
+

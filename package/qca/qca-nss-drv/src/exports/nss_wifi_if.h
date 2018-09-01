@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -14,22 +14,18 @@
  **************************************************************************
  */
 
-/**
- * @file nss_wifi_if.h
- *	NSS Wi-Fi interface message Structure and APIs.
+/*
+ * nss_wifi_if
+ *	Virtual interface message Structure and APIs
  */
 
 #ifndef __NSS_WIFI_IF_H
 #define __NSS_WIFI_IF_H
 
-/**
- * @addtogroup nss_wifi_subsystem
- * @{
- */
+#include "nss_if.h"
 
 /**
- * nss_wifi_if_msg_types
- *	Message types for Wi-Fi interface requests and responses.
+ * @brief Request/Response types
  */
 enum nss_wifi_if_msg_types {
 	NSS_WIFI_IF_OPEN = NSS_IF_OPEN,
@@ -44,249 +40,156 @@ enum nss_wifi_if_msg_types {
 	NSS_WIFI_IF_BSHAPER_UNASSIGN = NSS_IF_BSHAPER_UNASSIGN,
 	NSS_WIFI_IF_ISHAPER_CONFIG = NSS_IF_ISHAPER_CONFIG,
 	NSS_WIFI_IF_BSHAPER_CONFIG = NSS_IF_BSHAPER_CONFIG,
-	NSS_WIFI_IF_VSI_ASSIGN = NSS_IF_VSI_ASSIGN,
-	NSS_WIFI_IF_VSI_UNASSIGN = NSS_IF_VSI_UNASSIGN,
 	NSS_WIFI_IF_TX_CREATE_MSG = NSS_IF_MAX_MSG_TYPES + 1,
 	NSS_WIFI_IF_TX_DESTROY_MSG,
 	NSS_WIFI_IF_STATS_SYNC_MSG,
-	NSS_WIFI_IF_MAX_MSG_TYPES
+	NSS_WIFI_IF_MAX_MSG_TYPES,
 };
 
 /**
- * nss_wifi_if_error_types
- *	Error types for the Wi-Fi interface.
+ * @brief Error types
  */
 enum nss_wifi_if_error_types {
-	NSS_WIFI_IF_SUCCESS,
-	NSS_WIFI_IF_CORE_FAILURE,
-	NSS_WIFI_IF_ALLOC_FAILURE,
-	NSS_WIFI_IF_DYNAMIC_IF_FAILURE,
-	NSS_WIFI_IF_MSG_TX_FAILURE,
-	NSS_WIFI_IF_REG_FAILURE,
-	NSS_WIFI_IF_CORE_NOT_INITIALIZED
+	NSS_WIFI_IF_SUCCESS,			/**< Success */
+	NSS_WIFI_IF_CORE_FAILURE,		/**< NSS Core failure */
+	NSS_WIFI_IF_ALLOC_FAILURE,		/**< Memory allocation failure */
+	NSS_WIFI_IF_DYNAMIC_IF_FAILURE,		/**< Dynamic interface failure */
+	NSS_WIFI_IF_MSG_TX_FAILURE,		/**< Message transmission failure */
+	NSS_WIFI_IF_REG_FAILURE,		/**< Registration failure */
+	NSS_WIFI_IF_CORE_NOT_INITIALIZED,	/**< NSS core is not initialized */
 };
 
 /**
- * nss_wifi_if_create_msg
- *	Payload for configuring the Wi-Fi interface.
+ * The NSS wifi interface creation structure.
  */
 struct nss_wifi_if_create_msg {
-	uint32_t flags;				/**< Interface flags. */
-	uint8_t mac_addr[ETH_ALEN];		/**< MAC address. */
+	uint32_t flags;			/**< Interface flags */
+	uint8_t mac_addr[ETH_ALEN];	/**< MAC address */
 };
 
 /**
- * nss_wifi_if_destroy_msg
- *	Payload for destroying the Wi-Fi interface.
+ * The NSS wifi interface destruction structure.
  */
 struct nss_wifi_if_destroy_msg {
-	int32_t reserved;			/**< Placeholder. */
+	int32_t reserved;		/**< place holder */
 };
 
 /**
- * nss_wifi_if_stats
- *	Wi-Fi interface statistics received from the NSS.
+ * Structure which contains stats received from NSS.
  */
 struct nss_wifi_if_stats {
-	struct nss_cmn_node_stats node_stats;
-				/**< Common statistics. */
-	uint32_t tx_enqueue_failed;
-				/**< Number of packets dropped when queuing to the next node in a network graph. */
-	uint32_t shaper_enqueue_failed;
-				/**< Number of packets dropped when queuing to the shaper node. */
+	struct nss_if_stats node_stats;		/**< common stats */
+	uint32_t tx_enqueue_failed;		/**< enqueue failed for TX */
+	uint32_t shaper_enqueue_failed;		/**< enqueue to shaper node failed */
 };
 
 /**
- * nss_wifi_if_msg
- *	Data for sending and receiving Wi-Fi interface messages.
+ * Message structure to send/receive wifi interface commands
  */
 struct nss_wifi_if_msg {
-	struct nss_cmn_msg cm;			/**< Common message header. */
-
-	/**
-	 * Payload of a Wi-Fi interface message.
-	 */
+	struct nss_cmn_msg cm;				/**< Message Header */
 	union {
-		union nss_if_msgs if_msgs;
-				/**< NSS interface messages. */
-		struct nss_wifi_if_create_msg create;
-				/**< Creates a Wi-Fi interface rule. */
-		struct nss_wifi_if_destroy_msg destroy;
-				/**< Destroys a Wi-Fi interface rule. */
-		struct nss_wifi_if_stats stats;
-				/**< Interface statistics. */
-	} msg;			/**< Message payload. */
+		union nss_if_msgs if_msgs;		/**< NSS Interface messages */
+		struct nss_wifi_if_create_msg create;	/**< Message: create wifi if rule */
+		struct nss_wifi_if_destroy_msg destroy;	/**< Message: destroy wifi if rule */
+		struct nss_wifi_if_stats stats;		/**< stats */
+	} msg;
 };
 
-/**
- * nss_wifi_if_pvt
- *	Private data information for the Wi-Fi interface.
+/*
+ * Private data structure for wifi_if interface
  */
 struct nss_wifi_if_pvt {
-	struct semaphore sem;
-			/**< Semaphore for a specified Wi-Fi interface number. */
-	struct completion complete;
-			/**< Waits for the NSS to process a message on the specified Wi-Fi interface. */
-	int response;	/**< Response received on a Wi-Fi interface number. */
-	int sem_init_done;
-			/**< Indicates whether the semaphore is initialized. */
+	struct semaphore sem;		/**< Semaphore for a given wifi if_num*/
+	struct completion complete;	/**< Completion for a given wifi if_num */
+	int response;			/**< Response received on a wifi if_num */
+	int sem_init_done;		/**< Denotes if the semaphore is initialized or not */
 };
 
-/**
- * Callback function for receiving Wi-Fi data.
- *
- * @datatypes
- * net_device \n
- * sk_buff \n
- * napi_struct
- *
- * @param[in] netdev  Pointer to the associated network device.
- * @param[in] skb     Pointer to the data socket buffer.
- * @param[in] napi    Pointer to the NAPI structure.
- */
-typedef void (*nss_wifi_if_data_callback_t)(struct net_device *netdev,
-		struct sk_buff *skb, struct napi_struct *napi);
+typedef void (*nss_wifi_if_data_callback_t)(struct net_device *netdev, struct sk_buff *skb, struct napi_struct *napi);
+typedef void (*nss_wifi_if_msg_callback_t)(void *app_data, struct nss_cmn_msg *msg);
 
 /**
- * Callback function for receiving Wi-Fi messages.
- *
- * @datatypes
- * nss_cmn_msg
- *
- * @param[in] app_data  Pointer to the application context of the message.
- * @param[in] msg       Pointer to the message data.
- */
-typedef void (*nss_wifi_if_msg_callback_t)(void *app_data,
-		struct nss_cmn_msg *msg);
-
-/**
- * nss_wifi_if_handle
- *	Context for WLAN-to-NSS communication.
+ * Context for WLAN to NSS communication
  */
 struct nss_wifi_if_handle {
-	struct nss_ctx_instance *nss_ctx;	/**< NSS context. */
-	int32_t if_num;				/**< Interface number. */
-	struct nss_wifi_if_pvt *pvt;		/**< Private data structure. */
-	struct nss_wifi_if_stats stats;
-			/**< Statistics corresponding to this handle. */
-	nss_wifi_if_msg_callback_t cb;
-			/**< Callback registered by other modules. */
-	void *app_data;
-			/**< Application context to be passed to that callback. */
+	struct nss_ctx_instance *nss_ctx;	/**< NSS context */
+	int32_t if_num;				/**< Interface number */
+	struct nss_wifi_if_pvt *pvt;		/**< Private data structure */
+	struct nss_wifi_if_stats stats;		/**< stats corresponding to this handle */
+	nss_wifi_if_msg_callback_t cb;		/**< Callback registered by other modules */
+	void *app_data;				/**< app_data to be passed to that callback */
 };
 
 /**
- * nss_wifi_if_tx_msg
- *	Sends a message to the Wi-Fi interface.
+ * @brief Send message to wifi interface
  *
- * @datatypes
- * nss_ctx_instance \n
- * nss_wifi_if_msg
+ * @param nss_ctx NSS context (provided during registration)
+ * @param nwim Wifi interface message
  *
- * @param[in] nss_ctx  Pointer to the NSS context (provided during registration).
- * @param[in] nwim     Pointer to the Wi-Fi interface message.
- *
- * @return
- * Status of the Tx operation.
+ * @return command Tx status
  */
-extern nss_tx_status_t nss_wifi_if_tx_msg(struct nss_ctx_instance *nss_ctx,
-					struct nss_wifi_if_msg *nwim);
+extern nss_tx_status_t nss_wifi_if_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_wifi_if_msg *nwim);
 
 /**
- * nss_wifi_if_register
- *	Registers a Wi-Fi interface with the NSS driver.
+ * @brief Register wifi Interface with NSS driver
  *
- * @datatypes
- * nss_wifi_if_handle \n
- * nss_wifi_if_data_callback_t \n
- * net_device
+ * @param handle wifi context(provided during wifi interface allocation)
+ * @param rx_callback Callback handler for wifi data packets
+ * @param netdev netdevice structure of VAP
  *
- * @param[in] handle       Pointer to the Wi-Fi context (provided during Wi-Fi
- *                             interface allocation).
- * @param[in] rx_callback  Callback handler for Wi-Fi data packets.
- * @param[in] netdev       Pointer to the associated network device.
- *
- * @return
- * None.
+ * @return void
  */
 extern void nss_wifi_if_register(struct nss_wifi_if_handle *handle,
 				nss_wifi_if_data_callback_t rx_callback,
 				struct net_device *netdev);
 
 /**
- * nss_wifi_if_unregister
- *	Deregisters a Wi-Fi interface from the NSS driver.
+ * @brief Unregister wifi interface from NSS driver
  *
- * @datatypes
- * nss_wifi_if_handle
+ * @param handle wifi interface context (provided during wifi if allocation)
  *
- * @param[in] handle  Pointer to the Wi-Fi context.
- *
- * @return
- * None.
+ * @return void
  */
 extern void nss_wifi_if_unregister(struct nss_wifi_if_handle *handle);
 
 /**
- * nss_wifi_if_create_sync
- *	Creates a Wi-Fi interface.
+ * @brief Create a wifi interface
  *
- * @datatypes
- * net_device
+ * @param netdev net device associated with Wifi
  *
- * @param[in] netdev  Pointer to the associated network device.
- *
- * @return
- * Pointer to the Wi-Fi handle.
+ * @return pointer to wifi handle
  */
-extern struct nss_wifi_if_handle *nss_wifi_if_create_sync(struct net_device *netdev);
+extern struct nss_wifi_if_handle *nss_wifi_if_create(struct net_device *netdev);
 
 /**
- * nss_wifi_if_destroy_sync
- *	Destroys the Wi-Fi interface associated with the interface number.
+ * @brief Destroy the wifi interface associated with the if_num
  *
- * @datatypes
- * nss_wifi_if_handle
+ * @param if_num Interface number (provided during dynamic_interface allocation)
  *
- * @param[in] handle  Pointer to the Wi-Fi handle.
- *
- * @return
- * Status of the Tx operation.
+ * @return command Tx status
  */
-extern nss_tx_status_t nss_wifi_if_destroy_sync(struct nss_wifi_if_handle *handle);
+extern nss_tx_status_t nss_wifi_if_destroy(struct nss_wifi_if_handle *handle);
 
 /**
- * nss_wifi_if_tx_buf
- *	Sends a data packet or buffer to the NSS.
+ * @brief Send the packet/buffer to NSS
  *
- * @datatypes
- * nss_wifi_if_handle \n
- * sk_buff
+ * @param ctx Context associated with the interface.
+ * @param skb Packet to be sent to the NSS.
  *
- * @param[in] handle  Context associated with the interface.
- * @param[in] skb     Pointer to the data socket buffer.
- *
- * @return
- * Status of the Tx operation.
+ * @return command Tx status
  */
-extern nss_tx_status_t nss_wifi_if_tx_buf(struct nss_wifi_if_handle *handle,
-					struct sk_buff *skb);
+extern nss_tx_status_t nss_wifi_if_tx_buf(struct nss_wifi_if_handle *handle, struct sk_buff *skb);
 
 /**
- * nss_wifi_if_copy_stats
- *	Copies Wi-Fi interface statistics for display.
+ * @brief Copy wifi_if stats for display
  *
- * @param[in]  if_num  NSS interface number.
- * @param[in]  index   Index in the statistics array.
- * @param[out] line    Pointer to the buffer into which the statistics are copied.
+ * @param if_num Interface number for which the stats should be populated
+ * @param index Denotes the specific stats
+ * @param line Buffer into which the stats should be copied.
  *
- * @return
- * Number of bytes copied.
+ * @return Number of bytes copied
  */
 int32_t nss_wifi_if_copy_stats(int32_t if_num, int index, char *line);
-
-/**
- * @}
- */
 
 #endif /* __NSS_WIFI_IF_H */
