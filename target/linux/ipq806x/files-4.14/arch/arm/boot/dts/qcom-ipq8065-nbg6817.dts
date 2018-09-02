@@ -335,7 +335,7 @@
 			qcom,num-irq = <2>;
 			qcom,num-queue = <2>;
 			qcom,load-addr = <0x40800000>;
-			qcom,turbo-requency = <1>;
+			qcom,turbo-frequency;
 
 			qcom,capwap-enabled;
 			qcom,crypto-enabled;
