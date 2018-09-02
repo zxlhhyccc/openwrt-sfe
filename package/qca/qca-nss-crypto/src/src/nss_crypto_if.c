@@ -1,4 +1,5 @@
-/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
+/*
+ * Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -12,7 +13,6 @@
  * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
  * OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
  * PERFORMANCE OF THIS SOFTWARE.
- *
  *
  */
 #include <nss_crypto_hlos.h>
@@ -45,7 +45,7 @@ struct nss_crypto_drv_ctx gbl_ctx = {0};
  */
 struct nss_crypto_buf_node {
 	struct llist_node node;			/* lockless node */
-	struct nss_crypto_buf buf;		/* crypto buffer */
+	struct sk_buff *skb;			/* SKB for holding the Crypto buffer */
 	uint8_t results[NSS_CRYPTO_RESULTS_SZ] __attribute__((aligned(L1_CACHE_BYTES)));
 };
 
@@ -70,50 +70,71 @@ struct nss_crypto_user {
 	uint8_t zone_name[NSS_CRYPTO_ZONE_NAME_LEN];
 };
 
-LIST_HEAD(user_head);
+LIST_HEAD(nss_crypto_user_head);
 
 /*
- * XXX: its expected that this should be sufficient for 4 pipes
+ * This pool seed indicates that we have 1024 SKBs per
+ * user. These 1024 SKBs are preallocated per user and
+ * maintained in a list. If a particular user does not
+ * find a free SKB from this preallocated pool, it will
+ * try to allocate a new one.
  */
-static uint32_t pool_seed = 1024;
+static uint32_t nss_crypto_pool_seed = 1024;
 
 /*
- * nss_crypto_buf_init
- * Initialize the allocated crypto buffer
+ * nss_crypto_skb_to_buf
+ *	Initialize the skb with crypto buffer
  */
-static inline void nss_crypto_buf_init(struct nss_crypto_buf *buf)
+static inline struct nss_crypto_buf *nss_crypto_skb_to_buf(struct nss_crypto_buf_node *entry, struct sk_buff *skb)
 {
-	struct nss_crypto_buf_node *entry;
-	entry = container_of(buf, struct nss_crypto_buf_node, buf);
+	struct nss_crypto_buf *buf = (struct nss_crypto_buf *)skb_put(skb, sizeof(struct nss_crypto_buf));
 
 	BUG_ON(((uint32_t)entry->results % L1_CACHE_BYTES));
 
+	memset(entry->results, 0, NSS_CRYPTO_MAX_HASHLEN);
+
+	buf->ctx_0 = (uint32_t)entry;
 	buf->origin = NSS_CRYPTO_BUF_ORIGIN_HOST;
-	buf->hash_addr = buf->iv_addr = virt_to_phys(entry->results);
+
+	buf->hash_addr = (uint32_t)entry->results;
+	buf->iv_addr = (uint32_t)entry->results;
+
+	return buf;
 }
 
+/*
+ * nss_crypto_user_attach_all()
+ *	Helper API for user to attach with crypto
+ */
 void nss_crypto_user_attach_all(struct nss_crypto_ctrl *ctrl)
 {
-	struct nss_crypto_user *user;
+	nss_crypto_user_ctx_t *ctx = NULL;
+	struct nss_crypto_user *user, *tmp;
 
 	BUG_ON(!(nss_crypto_check_state(ctrl, NSS_CRYPTO_STATE_INITIALIZED)));
-
-	mutex_lock(&ctrl->mutex);
 
 	/*
 	 * Walk the list of users and call the attach if they are not called yet
 	 */
-	list_for_each_entry(user, &user_head, node) {
+	mutex_lock(&ctrl->mutex);
+	list_for_each_entry_safe(user, tmp, &nss_crypto_user_head, node) {
 		if (user->ctx) {
 			continue;
 		}
+
 		mutex_unlock(&ctrl->mutex);
-		user->ctx = user->attach(user);
+		ctx = user->attach(user);
 		mutex_lock(&ctrl->mutex);
+
+		if (ctx) {
+			user->ctx = ctx;
+		}
+
 	}
 
 	mutex_unlock(&ctrl->mutex);
 }
+
 /*
  * nss_crypto_register_user()
  * 	register a new user of the crypto driver
@@ -121,8 +142,9 @@ void nss_crypto_user_attach_all(struct nss_crypto_ctrl *ctrl)
 void nss_crypto_register_user(nss_crypto_attach_t attach, nss_crypto_detach_t detach, uint8_t *user_name)
 {
 	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
-	struct nss_crypto_user *user;
+	nss_crypto_user_ctx_t *ctx = NULL;
 	struct nss_crypto_buf_node *entry;
+	struct nss_crypto_user *user;
 	int i;
 
 	if (nss_crypto_check_state(ctrl, NSS_CRYPTO_STATE_NOT_READY)) {
@@ -132,6 +154,7 @@ void nss_crypto_register_user(nss_crypto_attach_t attach, nss_crypto_detach_t de
 
 	user = vzalloc(sizeof(struct nss_crypto_user));
 	if (!user) {
+		nss_crypto_warn("%p:memory allocation fails for user(%s)\n", ctrl, user_name);
 		return;
 	}
 
@@ -142,8 +165,9 @@ void nss_crypto_register_user(nss_crypto_attach_t attach, nss_crypto_detach_t de
 	strlcpy(user->zone_name, NSS_CRYPTO_ZONE_DEFAULT_NAME, NSS_CRYPTO_ZONE_NAME_LEN);
 
 	/*
-	 * initialize the lockless list
+	 * initialize list elements
 	 */
+	INIT_LIST_HEAD(&user->node);
 	init_llist_head(&user->pool_head);
 
 	/*
@@ -153,39 +177,71 @@ void nss_crypto_register_user(nss_crypto_attach_t attach, nss_crypto_detach_t de
 	strlcat(user->zone_name, user_name, NSS_CRYPTO_ZONE_NAME_LEN);
 	user->zone = kmem_cache_create(user->zone_name, sizeof(struct nss_crypto_buf_node), 0, SLAB_HWCACHE_ALIGN, NULL);
 	if (!user->zone) {
-		nss_crypto_info_always("failed to create crypto_buf for user\n");
+		nss_crypto_info_always("%p:(%s)failed to create crypto_buf for user\n", user, user_name);
 		goto fail;
 	}
 
-	for (i = 0; i < pool_seed; i++) {
-		/*
-		 * Try allocating till the seed value. If, the
-		 * system returned less buffers then it will be
-		 * taken care by the alloc routine by allocating
-		 * the addtional buffers.
-		 */
+	/*
+	 * Try allocating till the seed value. If, the
+	 * system returned less buffers then it will be
+	 * taken care by the alloc routine by allocating
+	 * the addtional buffers.
+	 */
+	for (i = 0; i < nss_crypto_pool_seed; i++) {
 		entry = kmem_cache_alloc(user->zone, GFP_KERNEL);
 		if (!entry) {
-			nss_crypto_info_always("failed to allocate memory");
+			nss_crypto_info_always("%p:failed to allocate memory\n", user);
 			break;
 		}
 
+		/*
+		 * We do not want to fail in case we are unable to allocate the
+		 * seed amount of SKBs. We would like to continue with whatever
+		 * SKBs that were allocated successfully.
+		 */
+		entry->skb = dev_alloc_skb(sizeof(struct nss_crypto_buf) + L1_CACHE_BYTES);
+		if (!entry->skb) {
+			kmem_cache_free(user->zone, entry);
+			break;
+		}
+
+		/*
+		 * Add to user local list.
+		 */
 		llist_add(&entry->node, &user->pool_head);
-		nss_crypto_buf_init(&entry->buf);
 	}
 
 	mutex_lock(&ctrl->mutex);
-	list_add_tail(&user->node, &user_head);
+	list_add_tail(&user->node, &nss_crypto_user_head);
 
-	if (nss_crypto_check_state(ctrl, NSS_CRYPTO_STATE_INITIALIZED)) {
-		user->ctx = user->attach(user);
+	/*
+	 * this is required; if the crypto has not probed but a new
+	 * user comes and registers itself. In that case we add the
+	 * user to the 'user_head' and wait for the probe to complete.
+	 * Once the probe completes the 'user_attach_all' gets called
+	 * which initiates the attach for all users
+	 */
+	if (!nss_crypto_check_state(ctrl, NSS_CRYPTO_STATE_INITIALIZED)) {
+		mutex_unlock(&ctrl->mutex);
+		return;
+	}
+
+	/*
+	 * release the mutex before calling; if the attach tries to unregister
+	 * in the same call it will not deadlock
+	 */
+	mutex_unlock(&ctrl->mutex);
+	ctx = attach(user);
+	mutex_lock(&ctrl->mutex);
+
+	if (ctx) {
+		user->ctx = ctx;
 	}
 
 	mutex_unlock(&ctrl->mutex);
-
 	return;
 fail:
-	vfree(user);
+	nss_crypto_unregister_user(user);
 	return;
 }
 EXPORT_SYMBOL(nss_crypto_register_user);
@@ -196,40 +252,40 @@ EXPORT_SYMBOL(nss_crypto_register_user);
  */
 void nss_crypto_unregister_user(nss_crypto_handle_t crypto)
 {
-	struct nss_crypto_user *user;
+	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
 	struct nss_crypto_buf_node *entry;
+	struct nss_crypto_user *user;
 	struct llist_node *node;
-	uint32_t buf_count;
 
 	user = (struct nss_crypto_user *)crypto;
-	buf_count = 0;
 
-	/*
-	 * XXX: need to handle the case when there are packets in flight
-	 * for the user
-	 */
-	if (user->detach) {
+	mutex_lock(&ctrl->mutex);
+	if (user->ctx && user->detach) {
 		user->detach(user->ctx);
 	}
 
-	while (!llist_empty(&user->pool_head)) {
-		buf_count++;
+	list_del(&user->node);
+	mutex_unlock(&ctrl->mutex);
 
+	/*
+	 * The skb pool is a lockless list
+	 */
+	while (!llist_empty(&user->pool_head)) {
 		node = llist_del_first(&user->pool_head);
 		entry = container_of(node, struct nss_crypto_buf_node, node);
 
+		dev_kfree_skb_any(entry->skb);
 		kmem_cache_free(user->zone, entry);
 	}
 
 	/*
-	 * it will assert for now if some buffers where in flight while the deregister
-	 * happened
+	 * this will happen if we are unwinding in a error
+	 * path. Remove the user zone if it was successfully
+	 * allocated.
 	 */
-	nss_crypto_assert(buf_count >= pool_seed);
-
-	kmem_cache_destroy(user->zone);
-
-	list_del(&user->node);
+	if (user->zone) {
+		kmem_cache_destroy(user->zone);
+	}
 
 	vfree(user);
 }
@@ -244,16 +300,16 @@ EXPORT_SYMBOL(nss_crypto_unregister_user);
  */
 struct nss_crypto_buf *nss_crypto_buf_alloc(nss_crypto_handle_t hdl)
 {
-	struct nss_crypto_user *user;
 	struct nss_crypto_buf_node *entry;
+	struct nss_crypto_user *user;
 	struct llist_node *node;
 
 	user = (struct nss_crypto_user *)hdl;
-	node = llist_del_first(&user->pool_head);
 
-	if (node) {
+	node = llist_del_first(&user->pool_head);
+	if (likely(node)) {
 		entry = container_of(node, struct nss_crypto_buf_node, node);
-		goto done;
+		return nss_crypto_skb_to_buf(entry, entry->skb);
 	}
 
 	/*
@@ -264,17 +320,19 @@ struct nss_crypto_buf *nss_crypto_buf_alloc(nss_crypto_handle_t hdl)
 	 * for dynamic allocation in future requests
 	 */
 	entry = kmem_cache_alloc(user->zone, GFP_KERNEL);
-	if (entry == NULL) {
-		goto fail;
+	if (!entry) {
+		nss_crypto_info("%p:(%s)Unable to allocate crypto buffer from cache\n", user, user->zone_name);
+		return NULL;
 	}
 
-done:
-	nss_crypto_buf_init(&entry->buf);
-	return &entry->buf;
+	entry->skb = dev_alloc_skb(sizeof(struct nss_crypto_buf) + L1_CACHE_BYTES);
+	if (!entry->skb) {
+		nss_crypto_info("%p:Unable to allocate skb\n", entry);
+		kmem_cache_free(user->zone, entry);
+		return NULL;
+	}
 
-fail:
-	nss_crypto_err("Unable to allocate crypto buffer from cache \n");
-	return NULL;
+	return nss_crypto_skb_to_buf(entry, entry->skb);
 }
 EXPORT_SYMBOL(nss_crypto_buf_alloc);
 
@@ -284,15 +342,16 @@ EXPORT_SYMBOL(nss_crypto_buf_alloc);
  */
 void nss_crypto_buf_free(nss_crypto_handle_t hdl, struct nss_crypto_buf *buf)
 {
-	struct nss_crypto_user *user;
 	struct nss_crypto_buf_node *entry;
+	struct nss_crypto_user *user;
 
 	user = (struct nss_crypto_user *)hdl;
-	entry = container_of(buf, struct nss_crypto_buf_node, buf);
+	entry = (struct nss_crypto_buf_node *)buf->ctx_0;
 
-	memset(buf, 0, sizeof(struct nss_crypto_buf));
-	memset(entry->results, 0, NSS_CRYPTO_MAX_HASHLEN);
-
+	/*
+	 * trim the skb of the crypto_buf
+	 */
+	skb_trim(entry->skb, 0);
 	llist_add(&entry->node, &user->pool_head);
 
 }
@@ -306,12 +365,12 @@ EXPORT_SYMBOL(nss_crypto_buf_free);
  * have been completed by the NSS crypto. It needs to have a switch case for
  * detecting control packets also
  */
-void nss_crypto_transform_done(void *app_data __attribute((unused)), void *buffer, uint32_t paddr, uint16_t len)
+void nss_crypto_transform_done(struct net_device *dev, struct sk_buff *skb, struct napi_struct *napi)
 {
-	struct nss_crypto_buf *buf = (struct nss_crypto_buf *)buffer;
+	struct nss_crypto_buf *buf = (struct nss_crypto_buf *)skb->data;
 	struct nss_crypto_buf_node *entry;
+	void *addr;
 
-	dma_unmap_single(NULL, paddr,  NSS_CRYPTO_BUF_MAP_LEN + NSS_CRYPTO_RESULTS_MAP_LEN, DMA_BIDIRECTIONAL);
 	if (likely(buf->data_in == buf->data_out)) {
 		dma_unmap_single(NULL, buf->data_in, buf->data_len, DMA_BIDIRECTIONAL);
 	} else {
@@ -319,9 +378,15 @@ void nss_crypto_transform_done(void *app_data __attribute((unused)), void *buffe
 		dma_unmap_single(NULL, buf->data_out, buf->data_len, DMA_FROM_DEVICE);
 	}
 
-	entry = container_of(buf, struct nss_crypto_buf_node, buf);
-	buf->iv_addr = 0;
-	buf->hash_addr = (uint32_t)entry->results;
+	dma_unmap_single(NULL, buf->iv_addr,  L1_CACHE_BYTES, DMA_BIDIRECTIONAL);
+
+	addr = phys_to_virt(buf->iv_addr);
+	entry = container_of(addr, struct nss_crypto_buf_node, results);
+
+	buf->hash_addr = (uint32_t)addr;
+	buf->iv_addr = (uint32_t)addr;
+
+	buf->ctx_0 = (uint32_t)entry;
 
 	buf->cb_fn(buf);
 }
@@ -345,8 +410,6 @@ void nss_crypto_process_event(void *app_data, struct nss_crypto_msg *nim)
 	struct nss_crypto_ctrl_eng *e_ctrl;
 	struct nss_crypto_idx_info *idx;
 	struct nss_crypto_sync_stats *stats;
-	struct nss_crypto_config_eng *open;
-	struct nss_crypto_config_session *session;
 	int i;
 
 	switch (nim->cm.type) {
@@ -376,47 +439,85 @@ void nss_crypto_process_event(void *app_data, struct nss_crypto_msg *nim)
 
 		break;
 
-	case NSS_CRYPTO_MSG_TYPE_OPEN_ENG:
-		open = &nim->msg.eng;
-
-		if (nim->cm.response != NSS_CMN_RESPONSE_ACK) {
-			nss_crypto_err("unable to Open the engine: resp code (%d), error code (%d)\n",
-					nim->cm.response, nim->cm.error);
-			return;
-		}
-
-		nss_crypto_info("engine(%d) opened successfully\n", open->eng_id);
-
-		break;
-
-	case NSS_CRYPTO_MSG_TYPE_UPDATE_SESSION:
-		session = &nim->msg.session;
-
-		if (nim->cm.response != NSS_CMN_RESPONSE_ACK) {
-			nss_crypto_err("unable to update session: resp code (%d), error code (%d)\n",
-					nim->cm.response, nim->cm.error);
-
-			return;
-		}
-
-		nss_crypto_info("session(%d) reset successfully\n", session->idx);
-
-		nss_crypto_assert(session->idx < NSS_CRYPTO_MAX_IDXS);
-
-		/*
-		 * If NSS state has changed to free, start the delayed free
-		 * timer for de-allocating session resources
-		 */
-		if (session->state == NSS_CRYPTO_SESSION_STATE_FREE) {
-			nss_crypto_start_idx_free(session->idx);
-		}
-
-		break;
-
 	default:
 		nss_crypto_err("unsupported sync type %d\n", nim->cm.type);
 		return;
 	}
+}
+
+/*
+ * nss_crypto_msg_sync_cb()
+ * 	callback handler for for NSS synchronous messages
+ */
+void nss_crypto_msg_sync_cb(void *app_data, struct nss_crypto_msg *nim)
+{
+	struct nss_crypto_msg *nim_resp = (struct nss_crypto_msg *)app_data;
+	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
+
+	/*
+	 * make sure there was no timeout
+	 */
+	if (atomic_read(&ctrl->complete_timeo)) {
+		nss_crypto_dbg("response received after timeout (type - %d)\n", cm->type);
+		return;
+	}
+
+	memcpy(nim_resp, nim, sizeof(struct nss_crypto_msg));
+
+	complete(&ctrl->complete);
+}
+
+/*
+ * nss_crypto_send_msg_sync
+ * 	Send synchronous message to NSS.
+ */
+nss_crypto_status_t nss_crypto_send_msg_sync(struct nss_crypto_msg *nim, enum nss_crypto_msg_type type)
+{
+	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
+	int ret;
+
+	/*
+	 * only one caller will be allowed to send a message
+	 */
+	if (down_interruptible(&ctrl->sem)) {
+		nss_crypto_dbg("failed to acquire semaphore\n");
+		return NSS_CRYPTO_STATUS_FAIL;
+	}
+
+	nss_cmn_msg_init(&nim->cm, NSS_CRYPTO_INTERFACE, type, NSS_CRYPTO_MSG_LEN, nss_crypto_msg_sync_cb, nim);
+
+	if (nss_crypto_tx_msg(nss_drv_hdl, nim) != NSS_TX_SUCCESS) {
+		nss_crypto_dbg("failed to send message to NSS(type - %d)\n", type);
+		goto fail;
+	}
+
+	atomic_set(&ctrl->complete_timeo, 0);
+
+	ret = wait_for_completion_timeout(&ctrl->complete, NSS_CRYPTO_RESP_TIMEO_TICKS);
+	if (!ret) {
+		atomic_inc(&ctrl->complete_timeo);
+		nss_crypto_err("no response received from NSS(type - %d)\n", type);
+		goto fail;
+	}
+
+	/*
+	 * need to ensure that the response data has correctly arrived in
+	 * current CPU cache
+	 */
+	smp_rmb();
+
+	if (nim->cm.response != NSS_CMN_RESPONSE_ACK) {
+		nss_crypto_err("Error from NSS: resp code (%d) error code (%d) \n",
+				nim->cm.response, nim->cm.error);
+		goto fail;
+	}
+
+	up(&ctrl->sem);
+	return NSS_CRYPTO_STATUS_OK;
+
+fail:
+	up(&ctrl->sem);
+	return NSS_CRYPTO_STATUS_FAIL;
 }
 
 /*
@@ -431,7 +532,13 @@ nss_crypto_status_t nss_crypto_transform_payload(nss_crypto_handle_t crypto, str
 	void *vaddr;
 	size_t len;
 
-	entry = container_of(buf, struct nss_crypto_buf_node, buf);
+	if (!buf->cb_fn) {
+		nss_crypto_warn("%p:no buffer(%p) callback present\n", crypto, buf);
+		return NSS_CRYPTO_STATUS_FAIL;
+	}
+
+	entry = (struct nss_crypto_buf_node *)buf->ctx_0;
+
 	/*
 	 * map data IN address
 	 */
@@ -452,9 +559,18 @@ nss_crypto_status_t nss_crypto_transform_payload(nss_crypto_handle_t crypto, str
 		buf->data_out = paddr;
 	}
 
-	paddr = dma_map_single(NULL, buf, NSS_CRYPTO_BUF_MAP_LEN + NSS_CRYPTO_RESULTS_MAP_LEN, DMA_BIDIRECTIONAL);
+	/*
+	 * We need to map the results into IV
+	 */
+	paddr = dma_map_single(NULL, entry->results, L1_CACHE_BYTES, DMA_BIDIRECTIONAL);
+	buf->hash_addr = paddr;
+	buf->iv_addr = paddr;
 
-	nss_status = nss_crypto_tx_buf(nss_drv_hdl, buf, paddr, sizeof(struct nss_crypto_buf));
+	/*
+	 * Crypto buffer is essentially sitting inside the "skb->data". So, there
+	 * is no need to MAP it here as it will be taken care by NSS driver
+	 */
+	nss_status = nss_crypto_tx_buf(nss_drv_hdl, NSS_CRYPTO_INTERFACE, entry->skb);
 	if (nss_status != NSS_TX_SUCCESS) {
 		nss_crypto_dbg("Not able to send crypto buf to NSS\n");
 		return NSS_CRYPTO_STATUS_FAIL;
@@ -485,9 +601,8 @@ void nss_crypto_init(void)
 	 */
 	nss_crypto_debugfs_init(&gbl_crypto_ctrl);
 
-	nss_drv_hdl = nss_crypto_notify_register(nss_crypto_process_event, &user_head);
-	nss_drv_hdl = nss_crypto_data_register(nss_crypto_transform_done, &user_head);
-
+	nss_drv_hdl = nss_crypto_notify_register(nss_crypto_process_event, &nss_crypto_user_head);
+	nss_drv_hdl = nss_crypto_data_register(NSS_CRYPTO_INTERFACE, nss_crypto_transform_done, NULL, 0);
 }
 
 /*
@@ -502,22 +617,12 @@ void nss_crypto_init(void)
 int nss_crypto_engine_init(uint32_t eng_num)
 {
 	struct nss_crypto_msg nim;
-	struct nss_cmn_msg *ncm = &nim.cm;
 	struct nss_crypto_config_eng *open = &nim.msg.eng;
 	struct nss_crypto_ctrl_eng *e_ctrl;
 	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
 	int i;
 
 	e_ctrl = &ctrl->eng[eng_num];
-
-	memset(&nim, 0, sizeof(struct nss_crypto_msg));
-
-	nss_cmn_msg_init(ncm,
-			NSS_CRYPTO_INTERFACE,
-			NSS_CRYPTO_MSG_TYPE_OPEN_ENG,
-			NSS_CRYPTO_MSG_LEN,
-			nss_crypto_process_event,
-			(void *)eng_num);
 
 	/*
 	 * prepare the open config message
@@ -537,24 +642,19 @@ int nss_crypto_engine_init(uint32_t eng_num)
 	/*
 	 * send open config message to NSS crypto
 	 */
-	if (nss_crypto_tx_msg(nss_drv_hdl, &nim) != NSS_TX_SUCCESS) {
-		nss_crypto_err("Failed to send the message to NSS\n");
-		return NSS_CRYPTO_STATUS_FAIL;
-	}
-
-	return NSS_CRYPTO_STATUS_OK;
+	return nss_crypto_send_msg_sync(&nim, NSS_CRYPTO_MSG_TYPE_OPEN_ENG);
 }
 
 /*
  * nss_crypto_send_session_update()
  * 	reset session specific state (alloc or free)
  */
-void nss_crypto_send_session_update(uint32_t session_idx, enum nss_crypto_session_state state, enum nss_crypto_cipher algo)
+nss_crypto_status_t nss_crypto_send_session_update(uint32_t session_idx, enum nss_crypto_session_state state, enum nss_crypto_cipher algo)
 {
 	struct nss_crypto_msg nim;
-	struct nss_cmn_msg *ncm = &nim.cm;
 	struct nss_crypto_config_session *session = &nim.msg.session;
 	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
+	nss_crypto_status_t status;
 	uint32_t iv_len = 0;
 
 	switch (state) {
@@ -568,11 +668,12 @@ void nss_crypto_send_session_update(uint32_t session_idx, enum nss_crypto_sessio
 
 	default:
 		nss_crypto_err("incorrect session state = %d\n", state);
-		return;
+		return NSS_CRYPTO_STATUS_FAIL;
 	}
 
 	switch (algo) {
-	case NSS_CRYPTO_CIPHER_AES:
+	case NSS_CRYPTO_CIPHER_AES_CBC:
+	case NSS_CRYPTO_CIPHER_AES_CTR:
 		iv_len = NSS_CRYPTO_MAX_IVLEN_AES;
 		break;
 
@@ -586,16 +687,8 @@ void nss_crypto_send_session_update(uint32_t session_idx, enum nss_crypto_sessio
 
 	default:
 		nss_crypto_err("invalid cipher\n");
-		return;
+		return NSS_CRYPTO_STATUS_FAIL;
 	}
-
-	memset(&nim, 0, sizeof(struct nss_crypto_msg));
-	nss_cmn_msg_init(ncm,
-			NSS_CRYPTO_INTERFACE,
-			NSS_CRYPTO_MSG_TYPE_UPDATE_SESSION,
-			NSS_CRYPTO_MSG_LEN,
-			nss_crypto_process_event,
-			(void *)session_idx);
 
 	session->idx = session_idx;
 	session->state = state;
@@ -604,7 +697,20 @@ void nss_crypto_send_session_update(uint32_t session_idx, enum nss_crypto_sessio
 	/*
 	 * send reset stats config message to NSS crypto
 	 */
-	nss_crypto_tx_msg(nss_drv_hdl, &nim);
+	status = nss_crypto_send_msg_sync(&nim, NSS_CRYPTO_MSG_TYPE_UPDATE_SESSION);
+	if (status != NSS_CRYPTO_STATUS_OK) {
+		nss_crypto_info_always("session(%d) update failed\n", session->idx);
+		return status;
+	}
+
+	/*
+	 * If NSS state has changed to free. Delete session resources
+	 */
+	if (session->state == NSS_CRYPTO_SESSION_STATE_FREE) {
+		nss_crypto_idx_free(session->idx);
+	}
+
+	return status;
 }
 
 /**
@@ -612,10 +718,7 @@ void nss_crypto_send_session_update(uint32_t session_idx, enum nss_crypto_sessio
  */
 uint8_t *nss_crypto_get_ivaddr(struct nss_crypto_buf *buf)
 {
-	struct nss_crypto_buf_node *entry;
-
-	entry = container_of(buf, struct nss_crypto_buf_node, buf);
-	return (uint8_t *)entry->results;
+	return (uint8_t *)buf->iv_addr;
 }
 EXPORT_SYMBOL(nss_crypto_get_ivaddr);
 
@@ -624,10 +727,7 @@ EXPORT_SYMBOL(nss_crypto_get_ivaddr);
  */
 uint8_t *nss_crypto_get_hash_addr(struct nss_crypto_buf *buf)
 {
-	struct nss_crypto_buf_node *entry;
-
-	entry = container_of(buf, struct nss_crypto_buf_node, buf);
-	return (uint8_t *)entry->results;
+	return (uint8_t *)buf->hash_addr;
 }
 EXPORT_SYMBOL(nss_crypto_get_hash_addr);
 

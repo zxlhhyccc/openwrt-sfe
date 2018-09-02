@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2015-2016 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013, 2015-2017 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -124,7 +124,7 @@ bool nss_crypto_pm_event_cb(void *app_data, bool turbo, bool auto_scale)
 	count = ctrl->max_clocks;
 
 	spin_lock_bh(&ctrl->lock); /* index lock*/
-	session = !!ctrl->idx_bitmap;
+	session = !bitmap_empty(ctrl->idx_bitmap, NSS_CRYPTO_MAX_IDXS);
 	spin_unlock_bh(&ctrl->lock); /* index unlock */
 
 	/*
@@ -133,11 +133,8 @@ bool nss_crypto_pm_event_cb(void *app_data, bool turbo, bool auto_scale)
 	 * the system has moved to turbo then we cannot
 	 * roll back
 	 */
-	if (!session) {
+	if (!session || !turbo)
 		return false;
-	} else if (session && !turbo) {
-		return false;
-	}
 
 	/*
 	 * notify NSS to switch NSS subsystem to turbo
@@ -154,6 +151,9 @@ bool nss_crypto_pm_event_cb(void *app_data, bool turbo, bool auto_scale)
 	 * scale down anymore
 	 */
 	nss_crypto_pm_notify_unregister();
+
+	atomic_set(&ctrl->perf_level, NSS_PM_PERF_LEVEL_TURBO);
+	complete(&ctrl->perf_complete);
 
 	return true;
 }
@@ -211,6 +211,7 @@ static void nss_crypto_clock_init(struct platform_device *pdev, struct device_no
 		}
 	}
 
+	atomic_set(&ctrl->perf_level, NSS_PM_PERF_LEVEL_NOMINAL);
 	nss_crypto_pm_notify_register(nss_crypto_pm_event_cb, ctrl);
 }
 
@@ -407,7 +408,7 @@ void nss_crypto_delayed_init(struct work_struct *work)
 	 * reserve the index if certain pipe pairs are locked out for
 	 * trust zone use
 	 */
-	ctrl->idx_bitmap = 0;
+	memset(ctrl->idx_bitmap, 0, sizeof(ctrl->idx_bitmap));
 
 	status = platform_driver_register(&nss_crypto_drv);
 	if (status) {

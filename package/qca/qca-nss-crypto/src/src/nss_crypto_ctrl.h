@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013, 2015-2017, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -21,7 +21,10 @@
 /**
  * @brief session free timeout parameters
  */
-#define NSS_CRYPTO_SESSION_FREE_TIMEOUT_SEC 60	/* session free request timeout in sec */
+#define NSS_CRYPTO_RESP_TIMEO_TICKS msecs_to_jiffies(3000)	/* Timeout for NSS reponses to Host messages */
+#define NSS_CRYPTO_PERF_LEVEL_TIMEO_TICKS msecs_to_jiffies(10000)	/* Timeout for NSS reponses to Host messages */
+
+#define NSS_CRYPTO_SESSION_BITMAP BITS_TO_LONGS(NSS_CRYPTO_MAX_IDXS)
 
 /**
  * @brief max key lengths supported for various algorithms
@@ -43,6 +46,11 @@ enum nss_crypto_state {
 	NSS_CRYPTO_STATE_READY,              /**< Crypto state is ready */
 	NSS_CRYPTO_STATE_INITIALIZED,        /**< Crypto engines are initialized */
 	NSS_CRYPTO_STATE_MAX
+};
+
+struct nss_crypto_work {
+	struct delayed_work work;	/* Work Structure */
+	uint32_t session_idx;		/* session for which work is scheduled */
 };
 
 struct nss_crypto_encr_cfg {
@@ -83,20 +91,28 @@ struct nss_crypto_ctrl_eng {
  * @brief Per index information required for getting information
  */
 struct nss_crypto_idx_info {
-	struct timer_list free_timer;		/**< Timer handling session dealloc request */
+	struct nss_crypto_key ckey;			/**< cipher key */
+	struct nss_crypto_key akey;			/**< auth key */
 
-	struct nss_crypto_key ckey;		/**< cipher key */
-	struct nss_crypto_key akey;		/**< auth key */
+	struct nss_crypto_stats stats;			/**< session stats */
 
-	struct nss_crypto_stats stats;		/**< session stats */
+	enum nss_crypto_session_state state;		/**< Indicates whether session is active or not */
 
-	enum nss_crypto_session_state state;	/**< Indicates whether session is active or not */
+	struct dentry *stats_dentry;			/**< debufs entry corresponding to stats */
+	struct dentry *cfg_dentry;			/**< debufs entry corresponding to config */
 
-	struct dentry *stats_dentry;		/**< debufs entry corresponding to stats */
-	struct dentry *cfg_dentry;		/**< debufs entry corresponding to config */
+	uint16_t req_type;				/**< transform is for encryption or decryption */
+	enum nss_crypto_max_blocklen cipher_blk_len;	/**< cipher block len */
+	enum nss_crypto_max_ivlen iv_len;		/**< iv len */
+};
 
-	uint16_t req_type;			/**< transform is for encryption or decryption */
-	uint16_t res;				/**< reserved for padding */
+/**
+ * @brief Host maintained control stats
+ */
+struct nss_crypto_ctrl_stats {
+	atomic_t session_alloc;			/**< Sessions allocated */
+	atomic_t session_free;			/**< Sessions freed */
+	atomic_t session_alloc_fail;		/**< Session alloc failures */
 };
 
 /**
@@ -115,24 +131,33 @@ struct nss_crypto_clock {
  * @note currently we support 4 indexes, in future it will allocate more
  */
 struct nss_crypto_ctrl {
-	uint32_t idx_bitmap;			/**< session allocation bitmap,
-						 upto NSS_CRYPTO_MAX_IDXS can be used */
-	uint32_t idx_state_bitmap;		/**< session state bitmap,
-						 upto NSS_CRYPTO_MAX_IDXS can be used */
+	unsigned long idx_bitmap[NSS_CRYPTO_SESSION_BITMAP];
+				/**< session allocation bitmap, upto NSS_CRYPTO_MAX_IDXS can be used */
+	unsigned long idx_state_bitmap[NSS_CRYPTO_SESSION_BITMAP];
+				/**< session state bitmap, upto NSS_CRYPTO_MAX_IDXS can be used */
 
 	uint32_t num_idxs;			/**< number of allocated indexes */
 	uint32_t num_eng;			/**< number of available engines */
 
 	atomic_t crypto_state;			/**< crypto devices initialized or not */
+	atomic_t perf_level;			/**< crypto PM perf level */
 
 	spinlock_t lock;			/**< lock */
 	struct mutex mutex;			/**< mutex lock */
+	struct semaphore sem;			/**< semaphore lock */
+
+	struct completion complete;		/**< completion for NSS message */
+	struct completion perf_complete;	/**< completion for NSS message */
+
+	atomic_t complete_timeo;		/**< indicates whether completion has timeout */
 
 	struct delayed_work crypto_work;	/**< crypto_work structure */
 
 	struct nss_crypto_ctrl_eng *eng;	/**< pointer to engines control data information */
 
 	struct nss_crypto_stats total_stats;	/**< crypto total stats */
+	struct nss_crypto_ctrl_stats ctrl_stats;
+						/**< crypto control stats */
 
 	struct dentry *root_dentry;		/**< debufs entry corresponding to qca-nss-crypto directory */
 	struct dentry *stats_dentry;		/**< debufs entry corresponding to stats directory */
@@ -152,21 +177,6 @@ struct nss_crypto_drv_ctx {
 	struct nss_ctx_instance *drv_hdl;	/**< NSS driver handle */
 	void *pm_hdl;				/**< NSS PM handle */
 };
-
-static inline bool nss_crypto_check_idx_state(uint32_t map, uint32_t idx)
-{
-	return !!(map & (0x1 << idx));
-}
-
-static inline void nss_crypto_set_idx_state(uint32_t *map, uint32_t idx)
-{
-	*map |= (0x1 << idx);
-}
-
-static inline void nss_crypto_clear_idx_state(uint32_t *map, uint32_t idx)
-{
-	*map &= ~(0x1 << idx);
-}
 
 /*
  * @brief set crypto state
@@ -222,9 +232,12 @@ void nss_crypto_ctrl_init(void);
  * @brief update IV parameters
  *
  * @param session_idx[IN] session index
+ * @param state[IN] crypto state (active/free)
  * @param cipher[IN] cipher algorithm
+ *
+ * @return status of the call
  */
-void nss_crypto_send_session_update(uint32_t session_idx, enum nss_crypto_session_state state, enum nss_crypto_cipher cipher);
+nss_crypto_status_t nss_crypto_send_session_update(uint32_t session_idx, enum nss_crypto_session_state state, enum nss_crypto_cipher cipher);
 
 /**
  * @brief reallocate memory.
@@ -238,13 +251,13 @@ void nss_crypto_send_session_update(uint32_t session_idx, enum nss_crypto_sessio
 void *nss_crypto_mem_realloc(void *src, size_t src_len, size_t dst_len);
 
 /**
- * @brief start the session's timer for deallocation
+ * @brief deallocate crypto session
  *
  * @param session_idx[IN] session index
  *
  * @return result of the call
  */
-bool nss_crypto_start_idx_free(uint32_t session_idx);
+void nss_crypto_idx_free(uint32_t session_idx);
 
 /*
  * @brief checks session's current state

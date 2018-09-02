@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013, 2015-2017, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -24,11 +24,14 @@
 #include <nss_crypto_ctrl.h>
 #include <nss_crypto_dbg.h>
 
-struct nss_crypto_ctrl gbl_crypto_ctrl = {0};
+struct nss_crypto_ctrl gbl_crypto_ctrl;
 
 extern struct nss_crypto_drv_ctx gbl_ctx;
 
-#define NSS_CRYPTO_SESSION_FREE_DELAY_TICKS  msecs_to_jiffies(NSS_CRYPTO_SESSION_FREE_TIMEOUT_SEC * 1000)
+static int free_timeout = 10;
+module_param(free_timeout, int, 0644);
+MODULE_PARM_DESC(free_timeout, "Max Timeout for Crypto session deallocation in seconds");
+
 #define NSS_CRYPTO_SIZE_KB(x) ((x) >> 10)
 
 /*
@@ -216,10 +219,10 @@ static void nss_crypto_setup_cmd_request(struct nss_crypto_cmd_request *req, uin
 	nss_crypto_write_cblk(&req->auth_seg_size, CRYPTO_AUTH_SEG_SIZE + base_addr, 0);
 
 	/*
-	 * cipher IV reset
+	 * cipher IV and counter reset
 	 */
 	for (i = 0; i < NSS_CRYPTO_CIPHER_IV_REGS; i++) {
-		nss_crypto_write_cblk(&req->encr_iv[i], CRYPTO_ENCR_IVn(i) + base_addr, 0);
+		nss_crypto_write_cblk(&req->encr_iv[i], CRYPTO_ENCR_CNTRn_IVn(i) + base_addr, 0);
 	}
 
 	/*
@@ -427,6 +430,7 @@ void nss_crypto_pipe_init(struct nss_crypto_ctrl_eng *eng, uint32_t idx, uint32_
 
 }
 
+#if !defined(CONFIG_NSS_CRYPTO_FORCE_UNCACHE)
 /*
  * nss_crypto_program_ckeys()
  * 	this will program cipher key registers with new keys
@@ -472,6 +476,7 @@ static void nss_crypto_write_akey_regs(uint8_t *base, uint16_t pp_num, struct ns
 		iowrite32(key_val, CRYPTO_AUTH_PIPEm_KEYn(pp_num, i) + base);
 	}
 }
+#endif
 
 /*
  * nss_crypto_validate_cipher()
@@ -494,12 +499,38 @@ static nss_crypto_status_t nss_crypto_validate_cipher(struct nss_crypto_key *cip
 		return NSS_CRYPTO_STATUS_OK;
 	}
 
-	nss_crypto_err("validating cipher (algo = %d, key_len = %d)\n", cipher->algo, cipher->key_len);
+	nss_crypto_info("validating cipher (algo = %d, key_len = %d)\n", cipher->algo, cipher->key_len);
 
 	/*
-	 * AES-128
+	 * AES-128 CTR
 	 */
-	if ((cipher->algo == NSS_CRYPTO_CIPHER_AES) && (cipher->key_len == NSS_CRYPTO_KEYLEN_AES128)) {
+	if ((cipher->algo == NSS_CRYPTO_CIPHER_AES_CTR) && (cipher->key_len == NSS_CRYPTO_KEYLEN_AES128)) {
+		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_KEY_AES128;
+		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_ALG_AES;
+		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_MODE_CTR;
+
+		memcpy(encr_cfg->key, cipher->key, NSS_CRYPTO_KEYLEN_AES128);
+
+		return NSS_CRYPTO_STATUS_OK;
+	}
+
+	/*
+	 * AES-256 CTR
+	 */
+	if ((cipher->algo == NSS_CRYPTO_CIPHER_AES_CTR) && (cipher->key_len == NSS_CRYPTO_KEYLEN_AES256)) {
+		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_KEY_AES256;
+		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_ALG_AES;
+		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_MODE_CTR;
+
+		memcpy(encr_cfg->key, cipher->key, NSS_CRYPTO_KEYLEN_AES256);
+
+		return NSS_CRYPTO_STATUS_OK;
+	}
+
+	/*
+	 * AES-128 CBC
+	 */
+	if ((cipher->algo == NSS_CRYPTO_CIPHER_AES_CBC) && (cipher->key_len == NSS_CRYPTO_KEYLEN_AES128)) {
 		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_KEY_AES128;
 		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_ALG_AES;
 		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_MODE_CBC;
@@ -510,9 +541,9 @@ static nss_crypto_status_t nss_crypto_validate_cipher(struct nss_crypto_key *cip
 	}
 
 	/*
-	 * AES-256
+	 * AES-256 CBC
 	 */
-	if ((cipher->algo == NSS_CRYPTO_CIPHER_AES) && (cipher->key_len == NSS_CRYPTO_KEYLEN_AES256)) {
+	if ((cipher->algo == NSS_CRYPTO_CIPHER_AES_CBC) && (cipher->key_len == NSS_CRYPTO_KEYLEN_AES256)) {
 		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_KEY_AES256;
 		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_ALG_AES;
 		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_MODE_CBC;
@@ -580,14 +611,16 @@ static nss_crypto_status_t nss_crypto_validate_auth(struct nss_crypto_key *auth,
 	/*
 	 * SHA1-HMAC
 	 */
-	if ((auth->algo == NSS_CRYPTO_AUTH_SHA1_HMAC) && (auth->key_len == NSS_CRYPTO_KEYLEN_SHA1HMAC)) {
+	if ((auth->algo == NSS_CRYPTO_AUTH_SHA1_HMAC)
+		 && (auth->key_len <= NSS_CRYPTO_MAX_KEYLEN_SHA1)) {
+
 		auth_cfg->iv = (uint32_t *)&fips_sha1_iv[0];
 
 		auth_cfg->cfg |= CRYPTO_AUTH_SEG_CFG_MODE_HMAC;
 		auth_cfg->cfg |= (CRYPTO_AUTH_SEG_CFG_ALG_SHA | CRYPTO_AUTH_SEG_CFG_SIZE_SHA1);
 		auth_cfg->cfg |= (CRYPTO_AUTH_SEG_CFG_FIRST | CRYPTO_AUTH_SEG_CFG_LAST);
 
-		memcpy(auth_cfg->key, auth->key, NSS_CRYPTO_KEYLEN_SHA1HMAC);
+		memcpy(auth_cfg->key, auth->key, auth->key_len);
 
 		return NSS_CRYPTO_STATUS_OK;
 	}
@@ -595,7 +628,8 @@ static nss_crypto_status_t nss_crypto_validate_auth(struct nss_crypto_key *auth,
 	/*
 	 * SHA256-HMAC
 	 */
-	if ((auth->algo == NSS_CRYPTO_AUTH_SHA256_HMAC) && (auth->key_len == NSS_CRYPTO_KEYLEN_SHA256HMAC)) {
+	if ((auth->algo == NSS_CRYPTO_AUTH_SHA256_HMAC)
+			&& (auth->key_len <= NSS_CRYPTO_KEYLEN_SHA256HMAC)) {
 
 		auth_cfg->iv = (uint32_t *)&fips_sha256_iv[0];
 
@@ -634,17 +668,19 @@ static void nss_crypto_key_update(struct nss_crypto_ctrl_eng *eng, uint32_t idx,
 	pp_num = ctrl_idx->idx.pp_num;
 	cblk = ctrl_idx->cblk;
 
+#if !defined(CONFIG_NSS_CRYPTO_FORCE_UNCACHE)
 	/*
 	 * if the indexes are within cached range and force uncached is not set,
 	 * then program the registers
 	 */
-	if ((idx < NSS_CRYPTO_MAX_CACHED_IDXS) && !CONFIG_NSS_CRYPTO_FORCE_UNCACHE) {
+	if (idx < NSS_CRYPTO_MAX_CACHED_IDXS) {
 		encr_cfg->cfg |= CRYPTO_ENCR_SEG_CFG_PIPE_KEYS;
 		auth_cfg->cfg |= CRYPTO_AUTH_SEG_CFG_PIPE_KEYS;
 
 		nss_crypto_write_ckey_regs(eng->crypto_base, pp_num, encr_cfg);
 		nss_crypto_write_akey_regs(eng->crypto_base, pp_num, auth_cfg);
 	}
+#endif
 
 	paddr = ctrl_idx->idx.cblk_paddr;
 
@@ -704,8 +740,20 @@ static inline nss_crypto_status_t nss_crypto_cblk_update(struct nss_crypto_ctrl_
 		auth_cfg |= CRYPTO_AUTH_SEG_CFG_POS_BEFORE;
 		break;
 
+	case NSS_CRYPTO_REQ_TYPE_NONE:
+		/* Pure authentication is supported */
+		if (params->req_type == NSS_CRYPTO_REQ_TYPE_AUTH) {
+			encr_cfg &= ~CRYPTO_ENCR_SEG_CFG_ENC;
+			auth_cfg |= CRYPTO_AUTH_SEG_CFG_POS_BEFORE;
+			break;
+		} else {
+			nss_crypto_err("unknown request type = %d\n",
+				params->req_type);
+			return NSS_CRYPTO_STATUS_EINVAL;
+		}
+
 	default:
-		nss_crypto_err("unknown request type\n");
+		nss_crypto_err("unknown request type = %d\n", params->req_type);
 		return NSS_CRYPTO_STATUS_EINVAL;
 	}
 
@@ -724,6 +772,28 @@ void nss_crypto_update_cipher_info(struct nss_crypto_idx_info *idx, struct nss_c
 	idx->ckey.algo = cipher ? cipher->algo : NSS_CRYPTO_CIPHER_NONE;
 	idx->ckey.key_len = cipher ? cipher->key_len : 0;
 	idx->ckey.key = NULL;
+
+	switch (idx->ckey.algo) {
+	case NSS_CRYPTO_CIPHER_AES_CBC:
+		idx->iv_len = NSS_CRYPTO_MAX_IVLEN_AES;
+		idx->cipher_blk_len = NSS_CRYPTO_MAX_BLKLEN_AES;
+		break;
+
+	case NSS_CRYPTO_CIPHER_AES_CTR:
+		idx->iv_len = NSS_CRYPTO_MAX_IVLEN_AES;
+		idx->cipher_blk_len = NSS_CRYPTO_MAX_BLKLEN_AES;
+		break;
+
+	case NSS_CRYPTO_CIPHER_DES:
+		idx->iv_len = NSS_CRYPTO_MAX_IVLEN_DES;
+		idx->cipher_blk_len = NSS_CRYPTO_MAX_BLKLEN_DES;
+		break;
+
+	default:
+		idx->iv_len = NSS_CRYPTO_MAX_IVLEN_NULL;
+		idx->cipher_blk_len = NSS_CRYPTO_MAX_BLKLEN_NULL;
+		break;
+	}
 }
 
 /*
@@ -747,6 +817,14 @@ static nss_crypto_status_t nss_crypto_update_idx_reqtype(struct nss_crypto_idx_i
 	 * check if the call is for resetting the state
 	 */
 	if (req_type == NSS_CRYPTO_REQ_TYPE_NONE) {
+		idx->req_type = req_type;
+		return NSS_CRYPTO_STATUS_OK;
+	}
+
+	/*
+	 * check if the call is for pure authentication
+	 */
+	if (req_type == NSS_CRYPTO_REQ_TYPE_AUTH) {
 		idx->req_type = req_type;
 		return NSS_CRYPTO_STATUS_OK;
 	}
@@ -791,6 +869,30 @@ bool nss_crypto_chk_idx_isfree(struct nss_crypto_idx_info *idx)
 }
 
 /*
+ * nss_crypto_wq_function()
+ *	delayed worker to delete session
+ */
+static void nss_crypto_wq_function(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct nss_crypto_work *cw = container_of(dwork, struct nss_crypto_work, work);
+	uint32_t session_idx = cw->session_idx;
+	nss_crypto_status_t status;
+
+	status = nss_crypto_send_session_update(session_idx, NSS_CRYPTO_SESSION_STATE_FREE, NSS_CRYPTO_CIPHER_NULL);
+	if (status != NSS_CRYPTO_STATUS_OK) {
+		nss_crypto_info("failed to delete session in delayed worker, reschedule the work\n");
+		schedule_delayed_work(&cw->work, msecs_to_jiffies(free_timeout * MSEC_PER_SEC));
+		return;
+	}
+
+	/*
+	 * free the work
+	 */
+	kfree(cw);
+}
+
+/*
  * nss_crypto_session_update()
  * 	update allocated crypto session parameters
  */
@@ -801,16 +903,13 @@ nss_crypto_status_t nss_crypto_session_update(nss_crypto_handle_t crypto, uint32
 	struct nss_crypto_ctrl_eng *e_ctrl = &ctrl->eng[0];
 	nss_crypto_status_t status = NSS_CRYPTO_STATUS_OK;
 	struct nss_crypto_ctrl_idx *ctrl_idx;
-	uint32_t idx_mask;
 	uint32_t paddr;
 	int i = 0;
-
-	idx_mask = (0x1 << session_idx);
 
 	/*
 	 * check if session is a valid active session
 	 */
-	if ((ctrl->idx_bitmap & idx_mask) != idx_mask) {
+	if (!test_bit(session_idx, ctrl->idx_bitmap)) {
 		nss_crypto_err("invalid session index\n");
 		return NSS_CRYPTO_STATUS_FAIL;
 	}
@@ -819,13 +918,13 @@ nss_crypto_status_t nss_crypto_session_update(nss_crypto_handle_t crypto, uint32
 	 * Check if the common command block parameters are already set for
 	 * this session
 	 */
-	if (nss_crypto_check_idx_state(ctrl->idx_state_bitmap, session_idx)) {
+	if (test_bit(session_idx, ctrl->idx_state_bitmap)) {
 		nss_crypto_dbg("Duplicate session update request\n");
 		return NSS_CRYPTO_STATUS_OK;
 	}
 
 	rmb();
-	nss_crypto_set_idx_state(&ctrl->idx_state_bitmap, session_idx);
+	set_bit(session_idx, ctrl->idx_state_bitmap);
 
 	/*
 	 * Update whether this SA index is used for encryption or decryption
@@ -861,6 +960,17 @@ nss_crypto_status_t nss_crypto_session_update(nss_crypto_handle_t crypto, uint32
 EXPORT_SYMBOL(nss_crypto_session_update);
 
 /*
+ * nss_crypto_session_alloc_nokey()
+ * 	allocate a new crypto session for operation
+ */
+nss_crypto_status_t nss_crypto_session_alloc_nokey(nss_crypto_handle_t crypto, struct nss_crypto_key *cipher, struct nss_crypto_key *auth,
+						uint32_t *session_idx)
+{
+	return NSS_CRYPTO_STATUS_OK;
+}
+EXPORT_SYMBOL(nss_crypto_session_alloc_nokey);
+
+/*
  * nss_crypto_session_alloc()
  * 	allocate a new crypto session for operation
  */
@@ -868,34 +978,24 @@ nss_crypto_status_t nss_crypto_session_alloc(nss_crypto_handle_t crypto, struct 
 						uint32_t *session_idx)
 {
 	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
+	struct nss_crypto_ctrl_stats *cstats = &ctrl->ctrl_stats;
 	struct nss_crypto_encr_cfg encr_cfg;
 	struct nss_crypto_auth_cfg auth_cfg;
 	enum nss_crypto_cipher cipher_algo;
 	nss_crypto_status_t status;
-	bool first_idx;
 	uint32_t idx;
 	int i;
 
 	memset(&encr_cfg, 0, sizeof(struct nss_crypto_encr_cfg));
 	memset(&auth_cfg, 0, sizeof(struct nss_crypto_auth_cfg));
 
-	spin_lock_bh(&ctrl->lock); /* index lock*/
-
-	if (ctrl->num_idxs == NSS_CRYPTO_MAX_IDXS) {
-		spin_unlock_bh(&ctrl->lock); /* index unlock*/
-		nss_crypto_err("index table full\n");
-		return NSS_CRYPTO_STATUS_ENOMEM;
-	}
-
-	nss_crypto_assert(ctrl->num_idxs <= NSS_CRYPTO_MAX_IDXS);
+	BUG_ON(in_atomic());
 
 	/*
 	 * validate cipher
 	 */
 	status = nss_crypto_validate_cipher(cipher, &encr_cfg);
 	if (status != NSS_CRYPTO_STATUS_OK) {
-		spin_unlock_bh(&ctrl->lock); /* index unlock*/
-		nss_crypto_err("invalid cipher configuration\n");
 		return status;
 	}
 
@@ -904,24 +1004,24 @@ nss_crypto_status_t nss_crypto_session_alloc(nss_crypto_handle_t crypto, struct 
 	 */
 	status = nss_crypto_validate_auth(auth, &auth_cfg);
 	if (status != NSS_CRYPTO_STATUS_OK) {
-		spin_unlock_bh(&ctrl->lock); /* index unlock*/
-		nss_crypto_err("invalid auth configuration\n");
 		return status;
 	}
 
-	/*
-	 * is this the first session that we are creating
-	 */
-	first_idx = !ctrl->idx_bitmap;
+	spin_lock_bh(&ctrl->lock); /* index lock*/
+
+	if (ctrl->num_idxs == NSS_CRYPTO_MAX_IDXS) {
+		spin_unlock_bh(&ctrl->lock); /* index lock*/
+		return NSS_CRYPTO_STATUS_ENOMEM;
+	}
 
 	/*
 	 * search a free index and allocate it
 	 */
-	idx = ffz(ctrl->idx_bitmap);
+	idx = find_first_zero_bit(ctrl->idx_bitmap, NSS_CRYPTO_MAX_IDXS);
 
 	ctrl->num_idxs++;
-	ctrl->idx_bitmap |= (0x1 << idx);
-	nss_crypto_clear_idx_state(&ctrl->idx_state_bitmap, idx);
+	set_bit(idx, ctrl->idx_bitmap);
+	clear_bit(idx, ctrl->idx_state_bitmap);
 
 	nss_crypto_update_cipher_info(&ctrl->idx_info[idx], cipher);
 	nss_crypto_update_auth_info(&ctrl->idx_info[idx], auth);
@@ -934,24 +1034,43 @@ nss_crypto_status_t nss_crypto_session_alloc(nss_crypto_handle_t crypto, struct 
 		nss_crypto_key_update(&ctrl->eng[i], idx, &encr_cfg, &auth_cfg);
 	}
 
-	*session_idx = idx;
-
 	cipher_algo = cipher ? cipher->algo : NSS_CRYPTO_CIPHER_NULL;
-	nss_crypto_send_session_update(idx, NSS_CRYPTO_SESSION_STATE_ACTIVE, cipher_algo);
-
 	spin_unlock_bh(&ctrl->lock); /* index unlock*/
 
+	atomic_inc(&cstats->session_alloc);
+
 	/*
-	 * scale the fabric up to turbo as this the first index
+	 * check if the perf level is nominal; only set it to
+	 * turbo when nominal
 	 */
-	if (unlikely(first_idx)) {
+	if (atomic_read(&ctrl->perf_level) == NSS_PM_PERF_LEVEL_NOMINAL) {
 		nss_pm_set_perf_level(gbl_ctx.pm_hdl, NSS_PM_PERF_LEVEL_TURBO);
+		if (!wait_for_completion_timeout(&ctrl->perf_complete, NSS_CRYPTO_PERF_LEVEL_TIMEO_TICKS)) {
+			goto fail;
+		}
 	}
 
-	nss_crypto_info_always("new index (used - %d, max - %d)\n", ctrl->num_idxs, NSS_CRYPTO_MAX_IDXS);
-	nss_crypto_dbg("index bitmap = 0x%x, index assigned = %d\n", ctrl->idx_bitmap, idx);
+	/*
+	 * If the message sending fails, return error
+	 */
+	status = nss_crypto_send_session_update(idx, NSS_CRYPTO_SESSION_STATE_ACTIVE, cipher_algo);
+	if (unlikely(status != NSS_CRYPTO_STATUS_OK)) {
+		goto fail;
+	}
+
+	*session_idx = idx;
+
+	nss_crypto_info("new index - %d (used - %d, max - %d)\n",idx, ctrl->num_idxs, NSS_CRYPTO_MAX_IDXS);
+	nss_crypto_dump_bitmap(ctrl->idx_bitmap, NSS_CRYPTO_MAX_IDXS);
 
 	return NSS_CRYPTO_STATUS_OK;
+
+fail:
+	nss_crypto_dbg("session id[%u] alloc fail\n", idx);
+	atomic_inc(&cstats->session_alloc_fail);
+	nss_crypto_idx_free(idx);
+
+	return NSS_CRYPTO_STATUS_FAIL;
 }
 EXPORT_SYMBOL(nss_crypto_session_alloc);
 
@@ -962,13 +1081,14 @@ EXPORT_SYMBOL(nss_crypto_session_alloc);
 nss_crypto_status_t nss_crypto_session_free(nss_crypto_handle_t crypto, uint32_t session_idx)
 {
 	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
+	struct nss_crypto_work *cw;
 	uint32_t idx_mask;
 
 	idx_mask = (0x1 << session_idx);
 
 	spin_lock_bh(&ctrl->lock); /* index lock */
 
-	if (!ctrl->num_idxs || ((ctrl->idx_bitmap & idx_mask) != idx_mask)) {
+	if (!ctrl->num_idxs || !test_bit(session_idx, ctrl->idx_bitmap)) {
 		spin_unlock_bh(&ctrl->lock);
 		nss_crypto_err("crypto index(%d) is invalid\n", session_idx);
 		return NSS_CRYPTO_STATUS_EINVAL;
@@ -977,11 +1097,17 @@ nss_crypto_status_t nss_crypto_session_free(nss_crypto_handle_t crypto, uint32_t
 	spin_unlock_bh(&ctrl->lock); /* index unlock*/
 
 	/*
-	 * The reset session is sent to NSS. The response will trigger the
-	 * timer for delayed freeing of the session. After the timeout
-	 * resources attached to session index will be deallocated
+	 * schedule deferred timer to delete the sessoin
 	 */
-	nss_crypto_send_session_update(session_idx, NSS_CRYPTO_SESSION_STATE_FREE, NSS_CRYPTO_CIPHER_NULL);
+	cw = kmalloc(sizeof (struct nss_crypto_work), GFP_ATOMIC);
+	if (!cw) {
+		nss_crypto_err("failed to allocate worker for idx-%d", session_idx);
+		return NSS_CRYPTO_STATUS_ENOMEM;
+	}
+	cw->session_idx = session_idx;
+
+	INIT_DELAYED_WORK(&cw->work, nss_crypto_wq_function);
+	schedule_delayed_work(&cw->work, msecs_to_jiffies(free_timeout * MSEC_PER_SEC));
 
 	return NSS_CRYPTO_STATUS_OK;
 }
@@ -991,16 +1117,13 @@ EXPORT_SYMBOL(nss_crypto_session_free);
  * nss_crypto_idx_free()
  * 	De-allocate all associated resources with session
  */
-void nss_crypto_idx_free(unsigned long session_idx)
+void nss_crypto_idx_free(uint32_t session_idx)
 {
 	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
+	struct nss_crypto_ctrl_stats *cstats = &ctrl->ctrl_stats;
 	struct nss_crypto_encr_cfg encr_cfg;
 	struct nss_crypto_auth_cfg auth_cfg;
-	uint32_t idx_mask;
-	bool last_idx;
 	int i;
-
-	idx_mask = (0x1 << session_idx);
 
 	memset(&encr_cfg, 0, sizeof(struct nss_crypto_encr_cfg));
 	memset(&auth_cfg, 0, sizeof(struct nss_crypto_auth_cfg));
@@ -1029,25 +1152,15 @@ void nss_crypto_idx_free(unsigned long session_idx)
 		nss_crypto_key_update(&ctrl->eng[i], session_idx, &encr_cfg, &auth_cfg);
 	}
 
-	ctrl->idx_bitmap &= ~idx_mask;
+	clear_bit(session_idx, ctrl->idx_bitmap);
 	ctrl->num_idxs--;
-
-	/*
-	 * check if this the last index that is getting deleted
-	 */
-	last_idx = !ctrl->idx_bitmap;
 
 	spin_unlock(&ctrl->lock); /* index unlock*/
 
-	/*
-	 * scale the fabric down to IDLE as this the last index
-	 */
-	if (unlikely(last_idx)) {
-		nss_pm_set_perf_level(gbl_ctx.pm_hdl, NSS_PM_PERF_LEVEL_IDLE);
-	}
+	atomic_inc(&cstats->session_free);
 
-	nss_crypto_info_always("deallocated index (used - %d, max - %d)\n", ctrl->num_idxs, NSS_CRYPTO_MAX_IDXS);
-	nss_crypto_dbg("index freed  = 0x%x, index = %d\n", ctrl->idx_bitmap, session_idx);
+	nss_crypto_info("deallocated index - %d (used - %d, max - %d)\n",session_idx, ctrl->num_idxs, NSS_CRYPTO_MAX_IDXS);
+	nss_crypto_dump_bitmap(ctrl->idx_bitmap, NSS_CRYPTO_MAX_IDXS);
 }
 
 /*
@@ -1080,6 +1193,41 @@ uint32_t nss_crypto_get_cipher_keylen(uint32_t session_idx)
 	return idx->ckey.key_len;
 }
 EXPORT_SYMBOL(nss_crypto_get_cipher_keylen);
+
+/*
+ * nss_crypto_get_cipher_block_len()
+ * 	return cipher block len with the associated session
+ */
+enum nss_crypto_max_blocklen nss_crypto_get_cipher_block_len(uint32_t session_idx)
+{
+	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
+	struct nss_crypto_idx_info *idx;
+
+	idx = &ctrl->idx_info[session_idx];
+	if (nss_crypto_chk_idx_isfree(idx))
+		return NSS_CRYPTO_MAX_BLKLEN_NULL;
+
+	return idx->cipher_blk_len;
+
+}
+EXPORT_SYMBOL(nss_crypto_get_cipher_block_len);
+
+/*
+ * nss_crypto_get_iv_len()
+ * 	return iv len with the associated session
+ */
+enum nss_crypto_max_ivlen nss_crypto_get_iv_len(uint32_t session_idx)
+{
+	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
+	struct nss_crypto_idx_info *idx;
+
+	idx = &ctrl->idx_info[session_idx];
+	if (nss_crypto_chk_idx_isfree(idx))
+		return NSS_CRYPTO_MAX_BLKLEN_NULL;
+
+	return idx->iv_len;
+}
+EXPORT_SYMBOL(nss_crypto_get_iv_len);
 
 /*
  * nss_crypto_get_reqtype()
@@ -1127,35 +1275,6 @@ uint32_t nss_crypto_get_auth_keylen(uint32_t session_idx)
 
 }
 EXPORT_SYMBOL(nss_crypto_get_auth_keylen);
-
-/*
- * nss_crypto_start_idx_free()
- *  	Start the timer for session deallocation request
- */
-bool nss_crypto_start_idx_free(uint32_t session_idx)
-{
-	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
-	struct nss_crypto_idx_info *idx;
-
-	idx = &ctrl->idx_info[session_idx];
-
-	/*
-	 * Scedule the timer if it is not already active
-	 */
-	if (timer_pending(&idx->free_timer)) {
-		nss_crypto_err("timer is already pending\n");
-
-		return false;
-	}
-
-	idx->free_timer.expires = jiffies + NSS_CRYPTO_SESSION_FREE_DELAY_TICKS;
-	idx->free_timer.data = session_idx;
-	idx->free_timer.function = nss_crypto_idx_free;
-
-	mod_timer(&idx->free_timer, idx->free_timer.expires);
-
-	return true;
-}
 
 /*
  * nss_crypto_idx_init()
@@ -1208,29 +1327,40 @@ nss_crypto_status_t nss_crypto_idx_init(struct nss_crypto_ctrl_eng *eng, struct 
 }
 
 /*
+ * nss_crypto_ctrl_stats_init
+ * 	Initialize control stats in crypto control
+ */
+static inline void nss_crypto_ctrl_stats_init(struct nss_crypto_ctrl_stats *stats)
+{
+	atomic_set(&stats->session_alloc, 0);
+	atomic_set(&stats->session_free, 0);
+	atomic_set(&stats->session_alloc_fail, 0);
+}
+
+/*
  * nss_crypto_ctrl_init()
  * 	initialize the crypto control
  */
 void nss_crypto_ctrl_init(void)
 {
 	struct nss_crypto_ctrl *ctrl = &gbl_crypto_ctrl;
-	struct nss_crypto_idx_info *idx_info;
-	uint32_t idx;
+
+	memset(ctrl, 0, sizeof(struct nss_crypto_ctrl));
 
 	spin_lock_init(&ctrl->lock);
 
 	mutex_init(&ctrl->mutex);
 
-	ctrl->idx_bitmap = 0;
+	sema_init(&ctrl->sem, 1);
+
+	init_completion(&ctrl->complete);
+	init_completion(&ctrl->perf_complete);
+
+	atomic_set(&ctrl->perf_level, NSS_PM_PERF_LEVEL_IDLE);
+
+	nss_crypto_ctrl_stats_init(&ctrl->ctrl_stats);
+
+	memset(ctrl->idx_bitmap, 0, sizeof(ctrl->idx_bitmap));
 	ctrl->num_eng = 0;
 	ctrl->num_idxs = 0;
-
-	/*
-	 * Initialize each session index timers used for
-	 * session deletion requests management
-	 */
-	for (idx = 0; idx < NSS_CRYPTO_MAX_IDXS; idx++) {
-		idx_info = &ctrl->idx_info[idx];
-		init_timer(&idx_info->free_timer);
-	}
 }

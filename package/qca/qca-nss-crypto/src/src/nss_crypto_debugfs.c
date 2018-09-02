@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -38,12 +38,23 @@ static void nss_crypto_debugfs_add_stats(struct dentry *parent, struct nss_crypt
 }
 
 /*
+ * nss_crypto_debugfs_add_ctrl_stats()
+ * 	Creates debugfs entries for Host maintained control statistics
+ */
+static void nss_crypto_debugfs_add_ctrl_stats(struct dentry *parent, struct nss_crypto_ctrl_stats *stats)
+{
+	debugfs_create_atomic_t("session_alloc", S_IRUGO, parent, &stats->session_alloc);
+	debugfs_create_atomic_t("session_free", S_IRUGO, parent, &stats->session_free);
+	debugfs_create_atomic_t("session_alloc_fail", S_IRUGO, parent, &stats->session_alloc_fail);
+}
+
+/*
  * nss_crypto_debugfs_init()
  * 	initiallize the crypto debugfs interface
  */
 void nss_crypto_debugfs_init(struct nss_crypto_ctrl *ctrl)
 {
-	struct dentry *tstats_dentry;
+	struct dentry *tstats_dentry, *cstats_dentry;
 
 	ctrl->root_dentry = debugfs_create_dir("qca-nss-crypto", NULL);
 	if (ctrl->root_dentry == NULL) {
@@ -93,6 +104,20 @@ void nss_crypto_debugfs_init(struct nss_crypto_ctrl *ctrl)
 	 * create total stats files
 	 */
 	nss_crypto_debugfs_add_stats(tstats_dentry, &ctrl->total_stats);
+
+	/*
+	 * Create a debugfs entry corresponding to host stats
+	 */
+	cstats_dentry = debugfs_create_dir("control", ctrl->stats_dentry);
+	if (cstats_dentry == NULL) {
+		nss_crypto_err("Unable to create qca-nss-crypto/stats/control directory in debugfs");
+		return;
+	}
+
+	/*
+	 * create host stats files
+	 */
+	nss_crypto_debugfs_add_ctrl_stats(cstats_dentry, &ctrl->ctrl_stats);
 }
 
 /*
@@ -182,19 +207,24 @@ void nss_crypto_debugfs_add_session(struct nss_crypto_ctrl *ctrl, uint32_t idx)
 	 * corresponding to algorithm in bytes
 	 */
 	switch (cipher_algo) {
-	case NSS_CRYPTO_CIPHER_AES:
-		debugfs_create_u32("AES", S_IRUGO, temp_dentry, &idx_info->ckey.key_len);
+	case NSS_CRYPTO_CIPHER_NONE:
+		debugfs_create_u32("NONE", S_IRUGO, temp_dentry, &idx_info->ckey.key_len);
+		break;
 
+	case NSS_CRYPTO_CIPHER_AES_CBC:
+		debugfs_create_u32("AES-CBC", S_IRUGO, temp_dentry, &idx_info->ckey.key_len);
+		break;
+
+	case NSS_CRYPTO_CIPHER_AES_CTR:
+		debugfs_create_u32("AES-CTR", S_IRUGO, temp_dentry, &idx_info->ckey.key_len);
 		break;
 
 	case NSS_CRYPTO_CIPHER_DES:
 		debugfs_create_u32("DES", S_IRUGO, temp_dentry, &idx_info->ckey.key_len);
-
 		break;
 
 	case NSS_CRYPTO_CIPHER_NULL:
 		debugfs_create_u32("NULL", S_IRUGO, temp_dentry, &idx_info->ckey.key_len);
-
 		break;
 
 	default:
@@ -217,19 +247,20 @@ void nss_crypto_debugfs_add_session(struct nss_crypto_ctrl *ctrl, uint32_t idx)
 	 * corresponding to algorithm in bytes
 	 */
 	switch (auth_algo) {
+	case NSS_CRYPTO_AUTH_NONE:
+		debugfs_create_u32("NONE", S_IRUGO, temp_dentry, &idx_info->akey.key_len);
+		break;
+
 	case NSS_CRYPTO_AUTH_SHA1_HMAC:
 		debugfs_create_u32("SHA1", S_IRUGO, temp_dentry, &idx_info->akey.key_len);
-
 		break;
 
 	case NSS_CRYPTO_AUTH_SHA256_HMAC:
 		debugfs_create_u32("SHA256", S_IRUGO, temp_dentry, &idx_info->akey.key_len);
-
 		break;
 
 	case NSS_CRYPTO_AUTH_NULL:
 		debugfs_create_u32("NULL", S_IRUGO, temp_dentry, &idx_info->akey.key_len);
-
 		break;
 
 	default:

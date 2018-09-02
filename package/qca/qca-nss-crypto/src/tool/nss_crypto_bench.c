@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -519,8 +519,6 @@ static void crypto_bench_flush(void)
 	}
 	wait_event_interruptible(tx_comp, (atomic_read(&tx_reqs) == 0));
 
-	memcpy(&param, &def_param, sizeof(struct crypto_bench_param));
-
 	while (!list_empty(&op_head)) {
 		op = list_first_entry(&op_head, struct crypto_op, node);
 
@@ -541,6 +539,8 @@ static void crypto_bench_flush(void)
 
 		crypto_sid[i] = -1;
 	}
+
+	memcpy(&param, &def_param, sizeof(struct crypto_bench_param));
 
 	param.num_loops = 0;
 }
@@ -567,7 +567,7 @@ static int32_t crypto_bench_prep_op(void)
 
 	prep = 1;
 
-	c_key.algo	= NSS_CRYPTO_CIPHER_AES;
+	c_key.algo	= NSS_CRYPTO_CIPHER_AES_CBC;
 	c_key.key 	= &cipher_key[0];
 	c_key.key_len   = param.key_len;
 
@@ -599,7 +599,7 @@ static int32_t crypto_bench_prep_op(void)
 
 	switch (param.ciph_algo) {
 	case 1:
-		c_key.algo = NSS_CRYPTO_CIPHER_AES;
+		c_key.algo = NSS_CRYPTO_CIPHER_AES_CBC;
 		c_key.key = &cipher_key[0];
 
 		chk_n_set((param.key_len <= 16), param.key_len, 16);
@@ -1006,4 +1006,3 @@ module_exit(crypto_bench_exit);
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("QCA NSS Crypto driver");
-MODULE_AUTHOR("Qualcomm Atheros Inc");

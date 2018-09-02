@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -24,9 +24,9 @@
 
 #define NSS_CRYPTO_BITS2BYTES(x)	(x / 8)	/**< Bits to Bytes */
 #define NSS_CRYPTO_BYTES2BITS(x)	(x * 8)	/**< Bytes to bits */
-#define NSS_CRYPTO_MAX_QDEPTH		256	/**< H/W queue depth per pipe */
+#define NSS_CRYPTO_MAX_QDEPTH		128	/**< H/W queue depth per pipe */
 #define NSS_CRYPTO_MAX_CACHED_IDXS	4	/**< Max supported sessions */
-#define NSS_CRYPTO_BAM_PP		4 	/**< BAM Pipe Pairs */
+#define NSS_CRYPTO_BAM_PP		2 	/**< BAM Pipe Pairs */
 #define NSS_CRYPTO_MAX_NAME		64	/**< Max supported name size */
 #define NSS_CRYPTO_BUF_TAILROOM		128	/**< Tailroom required for crypto */
 
@@ -122,7 +122,8 @@ typedef void (*nss_crypto_comp_t)(struct nss_crypto_buf *buf);
 struct nss_crypto_key {
 	uint32_t algo;			/**< algorithm for Cipher or Auth*/
 	uint32_t key_len;		/**< key length */
-	uint8_t *key;			/**< location of the key stored in memory */
+	uint32_t index;			/**< index of the key stored in secure memory */
+	uint8_t *key;			/**< Location of key stored in memory */
 };
 
 /**
@@ -247,6 +248,24 @@ nss_crypto_status_t nss_crypto_session_alloc(nss_crypto_handle_t crypto, struct 
 						uint32_t *session_idx);
 
 /**
+ * @brief Allocate a new session index with key information in secure memory
+ *        this should create the necessary state across all the layers
+ *
+ * @param crypto[IN] crypto device handle
+ * @param cipher[IN] cipher specific elements {cipher_algo, key_idx & key_length}
+ * @param auth[IN] auth specific elememts {auth_algo, key_idx & key_length}
+ * @param session_idx[OUT] session index for the crypto transform
+ *
+ * @return status of the call
+ *
+ * ENOMEM implies out of index
+ * ENOSUPP implies unsupported configuration
+ *
+ */
+nss_crypto_status_t nss_crypto_session_alloc_nokey(nss_crypto_handle_t crypto, struct nss_crypto_key *cipher, struct nss_crypto_key *auth,
+						uint32_t *session_idx);
+
+/**
  * @brief update per session global config inforamtion,this API is used configure
  * cipher/authentication skip lengths and crypto mode (encryption/decryption)
  *
@@ -296,6 +315,24 @@ nss_crypto_status_t nss_crypto_transform_payload(nss_crypto_handle_t crypto, str
  * @return cipher algorithm; for unallocated session the algorithm will be NONE
  */
 enum nss_crypto_cipher nss_crypto_get_cipher(uint32_t session_idx);
+
+/**
+ * @brief retrieve the cipher block len associated with the session index
+ *
+ * @param session_idx[IN] session index
+ *
+ * @return cipher block len; for unallocated session cipher blk len will be zero
+ */
+enum nss_crypto_max_blocklen nss_crypto_get_cipher_block_len(uint32_t session_idx);
+
+/**
+ * @brief retrieve the iv len associated with the session index
+ *
+ * @param session_idx[IN] session index
+ *
+ * @return iv len; for unallocated session iv len will be zero
+ */
+enum nss_crypto_max_ivlen nss_crypto_get_iv_len(uint32_t session_idx);
 
 /**
  * @brief retrieve the cipher key length associated with the session index
