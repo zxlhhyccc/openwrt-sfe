@@ -6,6 +6,12 @@ PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
+ifeq ($(CONFIG_TARGET_ipq),y)
+subtarget:=$(SUBTARGET)
+else
+subtarget:=ipq806x
+endif
+
 define KernelPackage/qca-nss-crypto
   SECTION:=kernel
   CATEGORY:=Kernel modules
@@ -40,6 +46,7 @@ define Build/Compile
 		ARCH="$(LINUX_KARCH)" \
 		SUBDIRS="$(PKG_BUILD_DIR)" \
 		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
+		SoC="$(subtarget)" \
 		modules
 endef
 
