@@ -166,8 +166,11 @@ void nss_qrfs_notify_unregister(int core);
  *	Sends a QRFS message to the NSS core to set the flow rule.
  *
  * @datatypes
- * sk_buff
+ * net_device \n
+ * flow_keys
  *
+ * @param[in] netdev  Pointer to the network device.
+ * @param[in] if_num  Physical interface number.
  * @param[in] skb     Pointer to the SKB buffer.
  * @param[in] cpu     CPU number to set in the flow table.
  * @param[in] action  Action to perform on the flow table.
@@ -175,7 +178,8 @@ void nss_qrfs_notify_unregister(int core);
  * @return
  * Status of the Tx operation.
  */
-nss_tx_status_t nss_qrfs_set_flow_rule(struct sk_buff *skb, uint32_t cpu, uint32_t action);
+nss_tx_status_t nss_qrfs_set_flow_rule(struct net_device *netdev, uint32_t if_num,
+					struct sk_buff *skb, uint32_t cpu, uint32_t action);
 
 /**
  * nss_qrfs_init

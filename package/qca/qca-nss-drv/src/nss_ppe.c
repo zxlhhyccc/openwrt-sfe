@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -61,7 +61,16 @@ static void nss_ppe_callback(void *app_data, struct nss_ppe_msg *npm)
  */
 nss_tx_status_t nss_ppe_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_ppe_msg *msg)
 {
+	struct nss_ppe_msg *nm;
 	struct nss_cmn_msg *ncm = &msg->cm;
+	struct sk_buff *nbuf;
+	int32_t status;
+
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: ppe msg dropped as core not ready\n", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
 
 	/*
 	 * Sanity check the message
@@ -71,13 +80,37 @@ nss_tx_status_t nss_ppe_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_ppe_
 		return NSS_TX_FAILURE;
 	}
 
-	if (!nss_ppe_verify_ifnum(ncm->interface)) {
-		nss_warning("%p: invalid interface %d\n", nss_ctx, ncm->interface);
+	if (nss_cmn_get_msg_len(ncm) > sizeof(struct nss_ppe_msg)) {
+		nss_warning("%p: message length is invalid: %d\n", nss_ctx, nss_cmn_get_msg_len(ncm));
 		return NSS_TX_FAILURE;
 	}
 
-	return nss_core_send_cmd(nss_ctx, msg, sizeof(*msg), NSS_NBUF_PAYLOAD_SIZE);
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
+		nss_warning("%p: msg dropped as command allocation failed\n", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	/*
+	 * Copy the message to our skb
+	 */
+	nm = (struct nss_ppe_msg *)skb_put(nbuf, sizeof(struct nss_ppe_msg));
+	memcpy(nm, msg, sizeof(struct nss_ppe_msg));
+
+	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (status != NSS_CORE_STATUS_SUCCESS) {
+		dev_kfree_skb_any(nbuf);
+		nss_warning("%p: Unable to enqueue 'ppe message'\n", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_REQ]);
+	return NSS_TX_SUCCESS;
 }
+EXPORT_SYMBOL(nss_ppe_tx_msg);
 
 /*
  * nss_ppe_tx_msg_sync()
@@ -112,6 +145,7 @@ nss_tx_status_t nss_ppe_tx_msg_sync(struct nss_ctx_instance *nss_ctx, struct nss
 	up(&ppe_pvt.sem);
 	return status;
 }
+EXPORT_SYMBOL(nss_ppe_tx_msg_sync);
 
 /*
  * nss_ppe_get_context()
@@ -121,6 +155,7 @@ struct nss_ctx_instance *nss_ppe_get_context(void)
 {
 	return (struct nss_ctx_instance *)&nss_top_main.nss[nss_top_main.ppe_handler_id];
 }
+EXPORT_SYMBOL(nss_ppe_get_context);
 
 /*
  * nss_ppe_msg_init()
@@ -130,103 +165,35 @@ void nss_ppe_msg_init(struct nss_ppe_msg *ncm, uint16_t if_num, uint32_t type, u
 {
 	nss_cmn_msg_init(&ncm->cm, if_num, type, len, cb, app_data);
 }
+EXPORT_SYMBOL(nss_ppe_msg_init);
 
 /*
- * nss_ppe_tx_ipsec_config_msg
- *	API to send inline IPsec port configure message to NSS FW
+ * nss_ppe_tx_l2_exception_msg
+ *	API to send vsi assign message to NSS FW
  */
-nss_tx_status_t nss_ppe_tx_ipsec_config_msg(uint32_t nss_ifnum, uint32_t vsi_num, uint16_t mtu,
-						__attribute__((unused))uint16_t mru)
+nss_tx_status_t nss_ppe_tx_l2_exception_msg(uint32_t if_num, bool exception_enable)
 {
 	struct nss_ctx_instance *nss_ctx = nss_ppe_get_context();
-	struct nss_ppe_msg npm = {0};
+	struct nss_ppe_msg npm;
 
 	if (!nss_ctx) {
 		nss_warning("Can't get nss context\n");
 		return NSS_TX_FAILURE;
 	}
 
-	if (vsi_num >= NSS_PPE_VSI_NUM_MAX) {
-		nss_warning("Invalid vsi number:%u\n", vsi_num);
+	if (!nss_ppe_verify_ifnum(if_num)) {
+		nss_warning("%p: invalid interface %d\n", nss_ctx, if_num);
 		return NSS_TX_FAILURE;
 	}
 
-	nss_ppe_msg_init(&npm, NSS_PPE_INTERFACE, NSS_PPE_MSG_IPSEC_PORT_CONFIG,
-			sizeof(struct nss_ppe_ipsec_port_config_msg), NULL, NULL);
+	nss_ppe_msg_init(&npm, if_num, NSS_PPE_MSG_L2_EXCEPTION,
+			sizeof(struct nss_ppe_l2_exception_msg), NULL, NULL);
 
-	npm.msg.ipsec_config.nss_ifnum = nss_ifnum;
-	npm.msg.ipsec_config.vsi_num = vsi_num;
-	npm.msg.ipsec_config.mtu = mtu;
+	npm.msg.l2_exception.l2_exception_enable = exception_enable;
 
 	return nss_ppe_tx_msg_sync(nss_ctx, &npm);
 }
-
-/*
- * nss_ppe_tx_ipsec_mtu_msg
- *	API to send IPsec port MTU change message to NSS FW
- */
-nss_tx_status_t nss_ppe_tx_ipsec_mtu_msg(uint32_t nss_ifnum, uint16_t mtu, __attribute__((unused))uint16_t mru)
-{
-	struct nss_ctx_instance *nss_ctx = nss_ppe_get_context();
-	struct nss_ppe_msg npm = {0};
-
-	if (!nss_ctx) {
-		nss_warning("Can't get nss context\n");
-		return NSS_TX_FAILURE;
-	}
-
-	nss_ppe_msg_init(&npm, NSS_PPE_INTERFACE, NSS_PPE_MSG_IPSEC_PORT_MTU_CHANGE,
-			sizeof(struct nss_ppe_ipsec_port_mtu_msg), NULL, NULL);
-
-	npm.msg.ipsec_mtu.nss_ifnum = nss_ifnum;
-	npm.msg.ipsec_mtu.mtu = mtu;
-
-	return nss_ppe_tx_msg_sync(nss_ctx, &npm);
-}
-
-/*
- * nss_ppe_tx_ipsec_add_intf_msg
- *	API to attach NSS interface to IPsec port
- */
-nss_tx_status_t nss_ppe_tx_ipsec_add_intf_msg(uint32_t nss_ifnum)
-{
-	struct nss_ctx_instance *nss_ctx = nss_ppe_get_context();
-	struct nss_ppe_msg npm = {0};
-
-	if (!nss_ctx) {
-		nss_warning("Can't get nss context\n");
-		return NSS_TX_FAILURE;
-	}
-
-	nss_ppe_msg_init(&npm, NSS_PPE_INTERFACE, NSS_PPE_MSG_IPSEC_ADD_INTF,
-			sizeof(struct nss_ppe_ipsec_add_intf_msg), NULL, NULL);
-
-	npm.msg.ipsec_addif.nss_ifnum = nss_ifnum;
-
-	return nss_ppe_tx_msg_sync(nss_ctx, &npm);
-}
-
-/*
- * nss_ppe_tx_ipsec_del_intf_msg
- *	API to detach NSS interface to IPsec port
- */
-nss_tx_status_t nss_ppe_tx_ipsec_del_intf_msg(uint32_t nss_ifnum)
-{
-	struct nss_ctx_instance *nss_ctx = nss_ppe_get_context();
-	struct nss_ppe_msg npm = {0};
-
-	if (!nss_ctx) {
-		nss_warning("Can't get nss context\n");
-		return NSS_TX_FAILURE;
-	}
-
-	nss_ppe_msg_init(&npm, NSS_PPE_INTERFACE, NSS_PPE_MSG_IPSEC_DEL_INTF,
-			sizeof(struct nss_ppe_ipsec_del_intf_msg), NULL, NULL);
-
-	npm.msg.ipsec_delif.nss_ifnum = nss_ifnum;
-
-	return nss_ppe_tx_msg_sync(nss_ctx, &npm);
-}
+EXPORT_SYMBOL(nss_ppe_tx_l2_exception_msg);
 
 /*
  * nss_ppe_handler()
@@ -297,9 +264,7 @@ void nss_ppe_register_handler(void)
 
 	nss_core_register_handler(nss_ctx, NSS_PPE_INTERFACE, nss_ppe_handler, NULL);
 
-	if (nss_ppe_debug_stats.valid) {
-		nss_ppe_stats_dentry_create();
-	}
+	nss_ppe_stats_dentry_create();
 }
 
 /*

@@ -10,7 +10,6 @@ obj-m += qca-nss-drv.o
 qca-nss-drv-objs := \
 			nss_bridge.o \
 			nss_c2c_tx.o \
-			nss_c2c_tx_log.o \
 			nss_c2c_tx_stats.o \
 			nss_c2c_rx.o \
 			nss_c2c_rx_stats.o \
@@ -94,6 +93,12 @@ qca-nss-drv-objs := \
 			nss_wifili.o \
 			nss_wifili_stats.o
 
+#
+# TODO: Deprecated files should be removed before merge
+#
+qca-nss-drv-objs += nss_tx_rx_virt_if.o \
+			nss_tx_rx_virt_if_stats.o
+
 # Base NSS data plane/HAL support
 qca-nss-drv-objs += nss_data_plane/nss_data_plane.o
 qca-nss-drv-objs += nss_hal/nss_hal.o
@@ -112,12 +117,17 @@ qca-nss-drv-objs += nss_data_plane/nss_data_plane_edma.o \
 		    nss_hal/ipq807x/nss_hal_pvt.o \
 		    nss_dtls_cmn.o \
 		    nss_crypto_cmn.o
-ccflags-y += -I$(obj)/nss_hal/ipq807x -DNSS_HAL_IPQ807x_SUPPORT -DNSS_MULTI_H2N_DATA_RING_SUPPORT
+ccflags-y += -I$(obj)/nss_hal/ipq807x -DNSS_HAL_IPQ807x_SUPPORT
 endif
 
 ccflags-y += -I$(obj)/nss_hal/include -I$(obj)/nss_data_plane/include -I$(obj)/exports -DNSS_DEBUG_LEVEL=0 -DNSS_PKT_STATS_ENABLED=1
 
-ccflags-y += -DNSS_PM_DEBUG_LEVEL=0 -DNSS_SKB_REUSE_SUPPORT=0
+ccflags-y += -DNSS_PM_DEBUG_LEVEL=0 -DNSS_SKB_RECYCLE_SUPPORT=0
+ifneq ($(findstring 4.4, $(KERNELVERSION)),)
+ccflags-y += -DNSS_CACHED_RING=1
+else
+ccflags-y += -DNSS_CACHED_RING=0
+endif
 ccflags-y += -Werror
 
 ifneq ($(findstring 3.4, $(KERNELVERSION)),)

@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -97,7 +97,7 @@ static void nss_wifi_if_msg_handler(struct nss_ctx_instance *nss_ctx,
 	/*
 	 * Update the callback and app_data for NOTIFY messages.
 	 */
-	if (nwim->cm.response == NSS_CMN_RESPONSE_NOTIFY) {
+	if (nwim->cm.response == NSS_CMM_RESPONSE_NOTIFY) {
 		ncm->cb = (nss_ptr_t)handle->cb;
 		ncm->app_data = (nss_ptr_t)handle->app_data;
 	}
@@ -173,14 +173,51 @@ static void nss_wifi_if_callback(void *app_data, struct nss_cmn_msg *ncm)
  */
 nss_tx_status_t nss_wifi_if_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_wifi_if_msg *nwim)
 {
+	int32_t status;
+	struct sk_buff *nbuf;
 	struct nss_cmn_msg *ncm = &nwim->cm;
+	struct nss_wifi_if_msg *nwim2;
+
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: Interface could not be created as core not ready\n", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
 
 	if (ncm->type > NSS_WIFI_IF_MAX_MSG_TYPES) {
 		nss_warning("%p: message type out of range: %d\n", nss_ctx, ncm->type);
 		return NSS_TX_FAILURE;
 	}
 
-	return nss_core_send_cmd(nss_ctx, nwim, sizeof(*nwim), NSS_NBUF_PAYLOAD_SIZE);
+	if (nss_cmn_get_msg_len(ncm) > sizeof(struct nss_wifi_if_msg)) {
+		nss_warning("%p: invalid length: %d. Length of wifi msg is %d\n",
+				nss_ctx, nss_cmn_get_msg_len(ncm), (int)sizeof(struct nss_wifi_if_msg));
+		return NSS_TX_FAILURE;
+	}
+
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
+		nss_warning("%p: wifi interface %d: command allocation failed\n", nss_ctx, ncm->interface);
+		return NSS_TX_FAILURE;
+	}
+
+	nwim2 = (struct nss_wifi_if_msg *)skb_put(nbuf, sizeof(struct nss_wifi_if_msg));
+	memcpy(nwim2, nwim, sizeof(struct nss_wifi_if_msg));
+
+	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (status != NSS_CORE_STATUS_SUCCESS) {
+		dev_kfree_skb_any(nbuf);
+		nss_warning("%p: Unable to enqueue 'virtual interface' command\n", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+
+	/*
+	 * The context returned is the virtual interface # which is, essentially, the index into the if_ctx
+	 * array that is holding the net_device pointer
+	 */
+	return NSS_TX_SUCCESS;
 }
 
 /*
@@ -471,9 +508,9 @@ EXPORT_SYMBOL(nss_wifi_if_unregister);
 nss_tx_status_t nss_wifi_if_tx_buf(struct nss_wifi_if_handle *handle,
 						struct sk_buff *skb)
 {
+	int32_t status;
 	struct nss_ctx_instance *nss_ctx;
 	int32_t if_num;
-	int cpu = 0;
 
 	if (!handle) {
 		nss_warning("nss_wifi_if_tx_buf handle is NULL\n");
@@ -497,6 +534,15 @@ nss_tx_status_t nss_wifi_if_tx_buf(struct nss_wifi_if_handle *handle,
 	nss_assert(NSS_IS_IF_TYPE(DYNAMIC, if_num));
 
 	/*
+	 * Get the NSS context that will handle this packet and check that it is initialised and ready
+	 */
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: wifi_if packet dropped as core not ready", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
+
+	/*
 	 * Sanity check the SKB to ensure that it's suitable for us
 	 */
 	if (unlikely(skb->len <= ETH_HLEN)) {
@@ -505,13 +551,25 @@ nss_tx_status_t nss_wifi_if_tx_buf(struct nss_wifi_if_handle *handle,
 	}
 
 	/*
-	 * set skb queue mapping
+	 * Direct the buffer to the NSS
 	 */
-	cpu = get_cpu();
-	put_cpu();
-	skb_set_queue_mapping(skb, cpu);
+	status = nss_core_send_buffer(nss_ctx,
+					if_num, skb,
+					NSS_IF_DATA_QUEUE_0,
+					H2N_BUFFER_PACKET,
+					H2N_BIT_FLAG_VIRTUAL_BUFFER);
+	if (unlikely(status != NSS_CORE_STATUS_SUCCESS)) {
+		nss_warning("%p: Rx packet unable to enqueue\n", nss_ctx);
 
-	return nss_core_send_packet(nss_ctx, skb, if_num, H2N_BIT_FLAG_VIRTUAL_BUFFER);
+		return NSS_TX_FAILURE_QUEUE;
+	}
+
+	/*
+	 * Kick the NSS awake so it can process our new entry.
+	 */
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_PACKET]);
+	return NSS_TX_SUCCESS;
 }
 EXPORT_SYMBOL(nss_wifi_if_tx_buf);
 

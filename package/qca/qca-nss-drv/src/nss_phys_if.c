@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -117,7 +117,7 @@ static void nss_phys_if_msg_handler(struct nss_ctx_instance *nss_ctx, struct nss
 	 * Update the callback and app_data for NOTIFY messages, IPv4 sends all notify messages
 	 * to the same callback/app_data.
 	 */
-	if (ncm->response == NSS_CMN_RESPONSE_NOTIFY) {
+	if (ncm->response == NSS_CMM_RESPONSE_NOTIFY) {
 		ncm->cb = (nss_ptr_t)nss_ctx->nss_top->phys_if_msg_callback[ncm->interface];
 		ncm->app_data = (nss_ptr_t)nss_ctx->subsys_dp_register[ncm->interface].ndev;
 	}
@@ -159,20 +159,43 @@ static void nss_phys_if_callback(void *app_data, struct nss_phys_if_msg *nim)
  */
 nss_tx_status_t nss_phys_if_buf(struct nss_ctx_instance *nss_ctx, struct sk_buff *os_buf, uint32_t if_num)
 {
+	int32_t status;
+	uint16_t flags = 0;
+
 	nss_trace("%p: Phys If Tx packet, id:%d, data=%p", nss_ctx, if_num, os_buf->data);
+
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: 'Phys If Tx' packet dropped as core not ready", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
 
 	/*
 	 * If we need the packet to be timestamped by GMAC Hardware at Tx
 	 * send the packet to tstamp NSS module
 	 */
 	if (unlikely(skb_shinfo(os_buf)->tx_flags & SKBTX_HW_TSTAMP)) {
-		/* try PHY Driver hook for transmit timestamping firstly */
-		skb_tx_timestamp(os_buf);
-		if (!(skb_shinfo(os_buf)->tx_flags & SKBTX_IN_PROGRESS))
-			return nss_tstamp_tx_buf(nss_ctx, os_buf, if_num);
+		return nss_tstamp_tx_buf(nss_ctx, os_buf, if_num);
 	}
 
-	return nss_core_send_packet(nss_ctx, os_buf, if_num, 0);
+	status = nss_core_send_buffer(nss_ctx, if_num, os_buf, NSS_IF_DATA_QUEUE_0, H2N_BUFFER_PACKET, flags);
+	if (unlikely(status != NSS_CORE_STATUS_SUCCESS)) {
+		nss_warning("%p: Unable to enqueue 'Phys If Tx' packet\n", nss_ctx);
+		if (status == NSS_CORE_STATUS_FAILURE_QUEUE) {
+			return NSS_TX_FAILURE_QUEUE;
+		}
+
+		return NSS_TX_FAILURE;
+	}
+
+	/*
+	 * Kick the NSS awake so it can process our new entry.
+	 */
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_PACKET]);
+
+	return NSS_TX_SUCCESS;
 }
 
 /*
@@ -181,9 +204,16 @@ nss_tx_status_t nss_phys_if_buf(struct nss_ctx_instance *nss_ctx, struct sk_buff
 nss_tx_status_t nss_phys_if_msg(struct nss_ctx_instance *nss_ctx, struct nss_phys_if_msg *nim)
 {
 	struct nss_cmn_msg *ncm = &nim->cm;
+	struct nss_phys_if_msg *nim2;
 	struct net_device *dev;
+	struct sk_buff *nbuf;
+	uint32_t if_num;
+	int32_t status;
 
-	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("Interface could not be created as core not ready");
+		return NSS_TX_FAILURE;
+	}
 
 	/*
 	 * Sanity check the message
@@ -198,13 +228,38 @@ nss_tx_status_t nss_phys_if_msg(struct nss_ctx_instance *nss_ctx, struct nss_phy
 		return NSS_TX_FAILURE;
 	}
 
-	dev = nss_ctx->subsys_dp_register[ncm->interface].ndev;
+	if (nss_cmn_get_msg_len(ncm) > sizeof(struct nss_phys_if_msg)) {
+		nss_warning("%p: invalid length: %d", nss_ctx, nss_cmn_get_msg_len(ncm));
+		return NSS_TX_FAILURE;
+	}
+
+	if_num = ncm->interface;
+	dev = nss_ctx->subsys_dp_register[if_num].ndev;
 	if (!dev) {
-		nss_warning("%p: Unregister physical interface %d: no context", nss_ctx, ncm->interface);
+		nss_warning("%p: Unregister physical interface %d: no context", nss_ctx, if_num);
 		return NSS_TX_FAILURE_BAD_PARAM;
 	}
 
-	return nss_core_send_cmd(nss_ctx, nim, sizeof(*nim), NSS_NBUF_PAYLOAD_SIZE);
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
+		nss_warning("%p: physical interface %p: command allocation failed", nss_ctx, dev);
+		return NSS_TX_FAILURE;
+	}
+
+	nim2 = (struct nss_phys_if_msg *)skb_put(nbuf, sizeof(struct nss_phys_if_msg));
+	memcpy(nim2, nim, sizeof(struct nss_phys_if_msg));
+
+	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (status != NSS_CORE_STATUS_SUCCESS) {
+		dev_kfree_skb_any(nbuf);
+		nss_warning("%p: Unable to enqueue 'physical interface' command\n", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+
+	return NSS_TX_SUCCESS;
 }
 
 /*

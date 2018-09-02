@@ -68,8 +68,6 @@
 				/**< MEC (Multicast echo check) peer ID. */
 #define NSS_WIFILI_MIC_KEY_LEN 8
 				/**< MIC (Message integrity code) key length. */
-#define NSS_WIFILI_TQM_RR_MAX 7
-				/**< Maximum transmit queue release reasons. */
 
 /**
  * nss_wifili_wme_stream_classes
@@ -134,10 +132,6 @@ enum nss_wifili_msg_types {
 	NSS_WIFILI_RADIO_CMD_MSG,
 	NSS_WIFILI_LINK_DESC_INFO_MSG,
 	NSS_WIFILI_PEER_SECURITY_TYPE_MSG,
-	NSS_WIFILI_PEER_NAWDS_ENABLE_MSG,
-	NSS_WIFILI_RADIO_BUF_CFG,
-	NSS_WIFILI_DBDC_REPEATER_SET_MSG,
-	NSS_DBDC_REPEATER_AST_FLUSH_MSG,
 	NSS_WIFILI_MAX_MSG
 };
 
@@ -148,79 +142,67 @@ enum nss_wifili_msg_types {
 enum nss_wifili_error_types {
 	NSS_WIFILI_EMSG_NONE,
 			/**< No error. */
-	NSS_WIFILI_EMSG_INIT_FAIL_IMPROPER_STATE,
-			/**< Device initialization failure due to improper state of device. */
 	NSS_WIFILI_EMSG_RINGS_INIT_FAIL,
 			/**< Device ring initialization failure. */
 	NSS_WIFILI_EMSG_PDEV_INIT_IMPROPER_STATE_FAIL,
 			/**< Radio initialization failure due to improper state of device. */
 	NSS_WIFILI_EMSG_PDEV_INIT_INVALID_RADIOID_FAIL,
 			/**< Radio initialization failed due to invalid radio ID. */
-	NSS_WIFILI_EMSG_PDEV_TX_IRQ_ALLOC_FAIL,
-			/**< IRQ line allocation for radio transmission failed. */
 	NSS_WIFILI_EMSG_PDEV_RESET_INVALID_RADIOID_FAIL,
 			/**< Radio reset failed due to invalid radio ID. */
-	NSS_WIFILI_EMSG_PDEV_RESET_PDEV_NULL_FAIL,
-			/**< Radio reset failed due to null physical device. */
-	NSS_WIFILI_EMSG_PDEV_RESET_IMPROPER_STATE_FAIL,
-			/**< Radio reset failed due to improper state of pdev. */
 	NSS_WIFILI_EMSG_START_IMPROPER_STATE_FAIL,
-			/**< Device start fail due to improper state */
+			/**< Device start failure due to improper state. */
 	NSS_WIFILI_EMSG_PEER_CREATE_FAIL,
-			/**< Peer creation failed. */
+			/**< Peer creation failure. */
 	NSS_WIFILI_EMSG_PEER_DELETE_FAIL,
-			/**< Peer deletion failed. */
+			/**< Peer delete failure. */
 	NSS_WIFILI_EMSG_HASHMEM_INIT_FAIL,
-			/**< Peer hash memory allocation failed. */
+			/**< Peer hash memory initialization failure. */
 	NSS_WIFILI_EMSG_PEER_FREELIST_APPEND_FAIL,
-			/**< Appending peer to freelist failed. */
+			/**< Peer freelist append failure. */
 	NSS_WIFILI_EMSG_PEER_CREATE_INVALID_VDEVID_FAIL,
-			/**< Peer creation failure due to invalid virtual device ID. */
+			/**< Peer creation failure due to invalid vdev ID. */
 	NSS_WIFILI_EMSG_PEER_CREATE_INVALID_PEER_ID_FAIL,
 			/**< Peer creation failure due to invalid peer ID. */
 	NSS_WIFILI_EMSG_PEER_CREATE_VDEV_NULL_FAIL,
-			/**< Peer creation failure due to null virtual device. */
+			/**< Peer creation failure due to null vdev. */
 	NSS_WIFILI_EMSG_PEER_CREATE_PDEV_NULL_FAIL,
-			/**< Peer creation failure due to null physical device. */
+			/**< Peer creation failure due to null peer. */
 	NSS_WIFILI_EMSG_PEER_CREATE_ALLOC_FAIL,
 			/**< Peer creation failure due to memory allocation failure. */
 	NSS_WIFILI_EMSG_PEER_DELETE_VAPID_INVALID_FAIL,
-			/**< Peer deletion failure due to invalid virtual device ID. */
+			/**< Peer delete failure due to invalid vdev_ID. */
 	NSS_WIFILI_EMSG_PEER_DELETE_INVALID_PEERID_FAIL,
-			/**< Peer deletion failed due to invalid peer ID. */
+			/**< Peer delete failure due to invalid peer ID. */
 	NSS_WIFILI_EMSG_PEER_DELETE_VDEV_NULL_FAIL,
-			/**< Peer deletion failure due to null virtual device. */
+			/**< Peer delete failure due to null vdev. */
 	NSS_WIFILI_EMSG_PEER_DELETE_PDEV_NULL_FAIL,
-			/**< Peer deletion failure due to null physical device. */
+			/**< Peer creation failure due to null vdev. */
 	NSS_WIFILI_EMSG_PEER_DELETE_PEER_NULL_FAIL,
-			/**< Peer deletion failure due to null peer. */
+			/**< Peer creation failure due to null peer. */
 	NSS_WIFILI_EMSG_PEER_DELETE_PEER_CORRUPTED_FAIL,
 			/**< Peer creation failure due to corrupted peer. */
-	NSS_WIFILI_EMSG_PEER_DUPLICATE_AST_INDEX_PEER_ID_FAIL,
-			/**< AST index provided is duplicate. */
 	NSS_WIFILI_EMSG_GROUP0_TIMER_ALLOC_FAIL,
 			/**< Timer allocation failure. */
 	NSS_WIFILI_EMSG_INSUFFICIENT_WT_FAIL,
 			/**< Insufficient worker thread error. */
 	NSS_WIFILI_EMSG_INVALID_NUM_TCL_RING_FAIL,
-			/**< Invalid number of Transmit Classifier rings provided in initialization message. */
+			/**< Invlalid number of Transmit Classifier ring provided in initialization message. */
 	NSS_WIFILI_EMSG_INVALID_NUM_REO_DST_RING_FAIL,
 			/**< Invalid number of reorder destination ring in initialization message. */
 	NSS_WIFILI_EMSG_HAL_SRNG_SOC_ALLOC_FAIL,
 			/**< Srng SoC memory allocation failure. */
-	NSS_WIFILI_EMSG_HAL_SRNG_INVALID_RING_INFO_FAIL,
-			/**< Device ring information is invalid. */
-	NSS_WIFILI_EMSG_HAL_SRNG_TCL_ALLOC_FAIL,
+	NSS_WIFILI_EMSG_HAL_TCL_SRNG_ALLOC_FAIL,
 			/**< Transmit Classifier srng ring allocation failure. */
-	NSS_WIFILI_EMSG_HAL_SRNG_TXCOMP_ALLOC_FAIL,
+	NSS_WIFILI_EMSG_HAL_TXCOMP_SRNG_ALLOC_FAIL,
 			/**< Txcomp srng ring allocation failure. */
-	NSS_WIFILI_EMSG_HAL_SRNG_REODST_ALLOC_FAIL,
+	NSS_WIFILI_EMSG_HAL_REODST_SRNG_ALLOC_FAIL,
 			/**< Reorder destination srng ring allocation failure. */
-	NSS_WIFILI_EMSG_HAL_SRNG_REOREINJECT_ALLOC_FAIL,
+	NSS_WIFILI_EMSG_HAL_REOREINJECT_SRNG_ALLOC_FAIL,
 			/**< Reorder reinject srng ring allocation failure. */
-	NSS_WIFILI_EMSG_HAL_SRNG_RXRELEASE_ALLOC_FAIL,
+	NSS_WIFILI_EMSG_HAL_RXRELEASE_SRNG_ALLOC_FAIL,
 			/**< Rx release srng ring allocation failure. */
-	NSS_WIFILI_EMSG_HAL_SRNG_RXEXCP_ALLOC_FAIL,
+	NSS_WIFILI_EMSG_HAL_RXEXCP_SRNG_ALLOC_FAIL,
 			/**< Rx exception srng ring allocation failure. */
 	NSS_WIFILI_EMSG_HAL_TX_MEMALLOC_FAIL,
 			/**< Tx HAL (hardware abstraction layer) srng ring allocation failure. */
@@ -262,16 +244,10 @@ enum nss_wifili_error_types {
 			 /**< Invalid peer id passed in WDS messages. */
 	NSS_WIFILI_EMSG_WDS_DUPLICATE_AST_INDEX_PEER_ID_FAIL,
 			/**< AST entry index is already filled. */
-	NSS_WIFILI_EMSG_INVALID_RADIO_CMD,
-			/**< Radio command is invalid. */
-	NSS_WIFILI_EMSG_INVALID_RADIO_IFNUM,
-			/**< Radio interface number is invalid. */
 	NSS_WIFILI_EMSG_PEER_SECURITY_PEER_NULL_FAIL,
 			/**< Security message failed as peer is null for a peer ID. */
 	NSS_WIFILI_EMSG_PEER_SECURITY_PEER_CORRUPTED_FAIL,
 			/**< Security message failed as peer is corrupted. */
-	NSS_WIFILI_EMSG_RADIO_INVALID_BUF_CFG,
-			/**< Buffer configuration message failed as invalid range value is provided. */
 	NSS_WIFILI_EMSG_UNKNOWN
 			/**< Unknown error message. */
 };
@@ -293,12 +269,8 @@ enum nss_wifili_soc_extended_data_types {
  *	Wi-Fi radio commands for wifili.
  */
 enum nss_wifili_radio_cmd {
-	NSS_WIFILI_RADIO_TX_CAPTURE_CMD,		/**< Enable Tx capture. */
-	NSS_WIFILI_SET_PRIMARY_RADIO,			/**< Set current radio as primary. */
-	NSS_WIFILI_SET_ALWAYS_PRIMARY,			/**< Set always primary flag. */
-	NSS_WIFILI_SET_FORCE_CLIENT_MCAST_TRAFFIC,	/**< Flag to force multicast traffic for a radio. */
-	NSS_WIFILI_SET_DROP_SECONDARY_MCAST,		/**< Flag to drop multicast traffic on secondary radio. */
-	NSS_WIFILI_RADIO_MAX_CMD			/**< Maximum radio command index. */
+	NSS_WIFILI_RADIO_TX_CAPTURE_CMD,			/**< Enable Tx capture. */
+	NSS_WIFILI_RADIO_MAX_CMD
 };
 
 /**
@@ -358,10 +330,6 @@ struct nss_wifili_tx_desc_init_msg {
 			/**< Number of memory address. */
 	uint32_t ext_desc_page_num;
 			/**< Extended descriptor page number. */
-	uint32_t num_tx_desc_2;
-			/**< Count of the software descriptors for second radio. */
-	uint32_t num_tx_desc_ext_2;
-			/**< Count of software extended descriptors for second radio. */
 };
 
 /**
@@ -430,8 +398,6 @@ struct nss_wifili_peer_msg {
 			/**< Hardware address search table index. */
 	uint8_t is_nawds;
 			/**< NAWDS enabled for peer. */
-	uint8_t reserved[3];
-			/**< Padding for alignment. */
 	uint32_t nss_peer_mem;
 			/**< Holds peer memory adderss for NSS. */
 };
@@ -483,6 +449,7 @@ struct nss_wifili_tx_stats {
 			/**< Tx numner of packets sent. */
 	uint32_t tx_processed_bytes;
 			/**< Tx number of bytes processed. */
+
 };
 
 /**
@@ -511,9 +478,9 @@ struct nss_wifili_rx_stats {
 	uint32_t rx_intra_bss_ucast_send_fail;
 					/**< Intra-BSS unicast send failure count. */
 	uint32_t rx_intra_bss_mcast_send;
-					/**< Intra-BSS multicast send count. */
+					/**< Intra-BSS mcast send count. */
 	uint32_t rx_intra_bss_mcast_send_fail;
-					/**< Intra-BSS multicast send failure count. */
+					/**< Intra-BSS mcast send failure count. */
 	uint32_t rx_sg_recv_send;
 					/**< Rx scatter-gather receive send count. */
 	uint32_t rx_sg_recv_fail;
@@ -553,6 +520,7 @@ struct nss_wifili_tx_comp_ring_stats {
 	uint32_t invalid_cookie;	/**< Tx comletion ring descriptor has invalid cookies. */
 	uint32_t hw_ring_empty;		/**< Tx completion hardware ring empty. */
 	uint32_t ring_reaped;		/**< Tx completion successfull ring reaped. */
+
 };
 
 /**
@@ -568,7 +536,6 @@ struct nss_wifili_tx_sw_pool_stats {
 	uint32_t tx_rel_ext_desc;		/**< Tx descriptor scatter-gather. */
 	uint32_t tx_rel_tx_desc;		/**< Tx descriptor source is hardware*/
 	uint32_t tx_rel_no_pb;			/**< Tx descriptor has pbuf present. */
-	uint32_t tx_queue_limit_drop;		/**< Tx number of packets dropped because of queueing limits. */
 };
 
 /**
@@ -628,27 +595,6 @@ struct nss_wifili_rx_dma_ring_stats {
 };
 
 /**
- * nss_wifili_dbdc_mode_stats
- *	Wifili DBDC mode statistics.
- */
-struct nss_wifili_dbdc_mode_stats {
-	uint32_t dbdc_flush_ast_failed;
-			/**< Number of times DBDC AST flush message send has failed. */
-	uint32_t dbdc_drop_rx_secmcast;
-			/**< Number of packets dropped in DBDC Rx for secondary multicast. */
-	uint32_t dbdc_drop_tx_secmcast;
-			/**< Number of packets dropped in DBDC Tx for secondary multicast. */
-	uint32_t dbdc_drop_rx_alwaysprimary;
-			/**< Number of packets dropped in DBDC Rx for always primary. */
-	uint32_t dbdc_drop_tx_alwaysprimary;
-			/**< Number of packets dropped in DBDC Tx for always primary. */
-	uint32_t dbdc_drop_loop_rx;
-			/**< Number of packets dropped in DBDC Rx for DBDC loop. */
-	uint32_t dbdc_drop_loop_tx;
-			/**< Number of packets dropped in DBDC Tx for DBDC loop. */
-};
-
-/**
  * nss_wifili_device_stats
  * 	Wifili specific statistics.
  */
@@ -673,8 +619,6 @@ struct nss_wifili_device_stats {
 									/**< Rx DMA ring statistics. */
 	struct nss_wifili_rx_wbm_ring_stats rxwbm_stats;
 									/**< WBM ring statistics. */
-	struct nss_wifili_dbdc_mode_stats dbdc_stats;
-									/**< DBDC mode statistics. */
 };
 
 /**
@@ -715,8 +659,10 @@ struct nss_wifili_soc_per_packet_metadata {
  *	Tx peer dropped packets.
  */
 struct nss_wifili_tx_dropped {
-	uint32_t drop_stats[NSS_WIFILI_TQM_RR_MAX];	/**< Discarded by firmware. */
-	uint32_t tx_nawds_mcast_drop_cnt;		/**< Total number of NAWDS multicast packets dropped. */
+	uint32_t fw_discard;		/**< Discarded by firmware. */
+	uint32_t fw_discard_retired;	/**< Firmware discard retired. */
+	uint32_t fw_discard_untransmitted;	/**< Firmware discard untransmitted. */
+	uint32_t mpdu_age_out;		/**< Number of PDU aged out. */
 };
 
 /**
@@ -724,21 +670,10 @@ struct nss_wifili_tx_dropped {
  *	Tx peer statistics.
  */
 struct nss_wifili_tx_ctrl_stats {
-	uint32_t ofdma; 		/**< Number of orthogonal frequency-division multiple
-					  access packets. */
+	uint32_t ofdma; 		/**< Total number of OFDMA packets. */
 	uint32_t non_amsdu_cnt; 	/**< Number of MSDUs with no MSDU level aggregation. */
 	uint32_t amsdu_cnt;		/**< Number of MSDUs part of AMSDU. */
-	uint32_t tx_mcast_cnt;          /**< Total number of multicast packets sent. */
-	uint32_t tx_mcast_bytes;        /**< Total number of multicast bytes sent. */
-	uint32_t tx_ucast_cnt;          /**< Total number of unicast packets sent. */
-	uint32_t tx_ucast_bytes;        /**< Total number of unicast bytes sent. */
-	uint32_t tx_bcast_bytes;        /**< Total number of broadcast bytes sent. */
-	uint32_t tx_bcast_cnt;          /**< Total number of broadcast packets sent. */
 	struct nss_wifili_tx_dropped dropped;	/**< Tx peer dropped. */
-	uint32_t tx_success_cnt;	/**< Total number of packets sent successfully. */
-	uint32_t tx_success_bytes;	/**< Total number of bytes sent successfully. */
-	uint32_t tx_nawds_mcast_cnt;	/**< Total number of NAWDS multicast packets sent. */
-	uint32_t tx_nawds_mcast_bytes;	/**< Total number of NAWDS multicast bytes sent. */
 };
 
 /**
@@ -765,12 +700,6 @@ struct nss_wifili_rx_ctrl_stats {
 	uint32_t rx_recvd_bytes;		/**< Total Rx received count. */
 	uint32_t nawds_mcast_drop;		/**< Total NAWDS drop count. */
 	uint32_t nawds_mcast_drop_bytes;	/**< Total NAWDS drop count. */
-	uint32_t rx_intra_bss_pkts_num;		/**< Total Intra-BSS packets received. */
-	uint32_t rx_intra_bss_pkts_bytes;	/**< Total Intra-BSS bytes received. */
-	uint32_t rx_intra_bss_fail_num;		/**< Total Intra-BSS packets failed. */
-	uint32_t rx_intra_bss_fail_bytes;	/**< Total Intra-BSS bytes received. */
-	uint32_t bcast_rcv_cnt;			/**< Total number of broadcast packets received. */
-	uint32_t bcast_rcv_bytes;		/**< Total number of broadcast bytes received. */
 };
 
 /**
@@ -872,23 +801,6 @@ struct nss_wifili_peer_security_type_msg {
 };
 
 /**
- * nss_wifili_peer_nawds_enable_msg
- *	Wifili NAWDS enable for this peer.
- */
-struct nss_wifili_peer_nawds_enable_msg {
-	uint16_t peer_id;			/**< Peer ID. */
-	uint16_t is_nawds;			/**< Enable NAWDS on this peer. */
-};
-
-/**
- * nss_wifili_dbdc_repeater_set_msg
- *	Wifili DBDC repeater set message.
- */
-struct nss_wifili_dbdc_repeater_set_msg {
-	uint32_t is_dbdc_en;			/**< DBDC enable flag. */
-};
-
-/**
  * nss_wifili_reo_tidq_msg
  *	REO TID queue setup message.
  */
@@ -908,24 +820,6 @@ struct nss_wifili_radio_cmd_msg {
 };
 
 /**
- * nss_wifili_radio_buf_cfg_msg
- *	Wi-Fi Radio buffer requirement configuration.
- *
- * Number of payloads needed in NSS for multi-client scenarios are configured
- * from Wi-Fi driver as per following ranges:
- * 0-64 peers range 1.
- * 64-128 peers range 2.
- * 128-256 peers range 3.
- * >256 peers range 4.
- * Number of payloads needed in for each peer range is configured by Wi-Fi driver
- * for flexibility.
- */
-struct nss_wifili_radio_buf_cfg_msg {
-	uint32_t buf_cnt;		/**< Number of buffers required. */
-	uint32_t range;			/**< Peer range. */
-};
-
-/**
  * nss_wifili_radio_cfg_msg
  *	Wi-Fi radio specific special configurations.
  */
@@ -938,8 +832,6 @@ struct nss_wifili_radio_cfg_msg {
 	union {
 		struct nss_wifili_radio_cmd_msg radiocmdmsg;
 							/**< Radio specific commands. */
-		struct nss_wifili_radio_buf_cfg_msg radiobufcfgmsg;
-							/**< Radio specific buffer configurations. */
 	} radiomsg;	/**< Wi-Fi radio command message. */
 };
 
@@ -986,11 +878,7 @@ struct nss_wifili_msg {
 				/**< Link descriptor buffer address information. */
 		struct nss_wifili_peer_security_type_msg securitymsg;
 				/**< Wifili peer security message. */
-		struct nss_wifili_peer_nawds_enable_msg nawdsmsg;
-				/**< Wifili peer enable NAWDS message. */
-		struct nss_wifili_dbdc_repeater_set_msg dbdcrptrmsg;
-				/**< Wifili DBDC repeater enable message. */
-	} msg;			/**< Message payload. */
+	} msg;
 };
 
 /**

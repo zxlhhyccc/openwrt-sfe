@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -62,7 +62,7 @@ static void nss_bridge_handler(struct nss_ctx_instance *nss_ctx, struct nss_cmn_
 	 * Update the callback and app_data for NOTIFY messages, IPv4 sends all notify messages
 	 * to the same callback/app_data.
 	 */
-	if (ncm->response == NSS_CMN_RESPONSE_NOTIFY) {
+	if (ncm->response == NSS_CMM_RESPONSE_NOTIFY) {
 		ncm->cb = (nss_ptr_t)nss_ctx->nss_top->bridge_callback;
 		ncm->app_data = (nss_ptr_t)nss_ctx->nss_top->bridge_ctx;
 	}
@@ -138,7 +138,16 @@ EXPORT_SYMBOL(nss_bridge_verify_if_num);
  */
 nss_tx_status_t nss_bridge_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_bridge_msg *msg)
 {
+	struct nss_bridge_msg *nm;
 	struct nss_cmn_msg *ncm = &msg->cm;
+	struct sk_buff *nbuf;
+	int32_t status;
+
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: bridge msg dropped as core not ready", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
 
 	/*
 	 * Sanity check the message
@@ -153,7 +162,35 @@ nss_tx_status_t nss_bridge_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_b
 		return NSS_TX_FAILURE;
 	}
 
-	return nss_core_send_cmd(nss_ctx, msg, sizeof(*msg), NSS_NBUF_PAYLOAD_SIZE);
+	if (nss_cmn_get_msg_len(ncm) > sizeof(struct nss_bridge_msg)) {
+		nss_warning("%p: message length is invalid: %d", nss_ctx, nss_cmn_get_msg_len(ncm));
+		return NSS_TX_FAILURE;
+	}
+
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
+		nss_warning("%p: msg dropped as command allocation failed", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	/*
+	 * Copy the message to our skb
+	 */
+	nm = (struct nss_bridge_msg *)skb_put(nbuf, sizeof(struct nss_bridge_msg));
+	memcpy(nm, msg, sizeof(struct nss_bridge_msg));
+
+	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (status != NSS_CORE_STATUS_SUCCESS) {
+		dev_kfree_skb_any(nbuf);
+		nss_warning("%p: Unable to enqueue 'bridge message'", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_REQ]);
+	return NSS_TX_SUCCESS;
 }
 EXPORT_SYMBOL(nss_bridge_tx_msg);
 
@@ -385,39 +422,6 @@ nss_tx_status_t nss_bridge_tx_leave_msg(uint32_t bridge_if_num, struct net_devic
 	return nss_bridge_tx_msg_sync(nss_ctx, &nbm);
 }
 EXPORT_SYMBOL(nss_bridge_tx_leave_msg);
-
-/*
- * nss_bridge_tx_set_fdb_learn_msg
- *	API to send FDB learn message to NSS FW
- */
-nss_tx_status_t nss_bridge_tx_set_fdb_learn_msg(uint32_t bridge_if_num, enum nss_bridge_fdb_learn_mode fdb_learn)
-{
-	struct nss_ctx_instance *nss_ctx = nss_bridge_get_context();
-	struct nss_bridge_msg nbm;
-
-	if (!nss_ctx) {
-		nss_warning("Can't get nss context\n");
-		return NSS_TX_FAILURE;
-	}
-
-	if (nss_bridge_verify_if_num(bridge_if_num) == false) {
-		nss_warning("%p: received invalid interface %d\n", nss_ctx, bridge_if_num);
-		return NSS_TX_FAILURE;
-	}
-
-	if (fdb_learn >= NSS_BRIDGE_FDB_LEARN_MODE_MAX) {
-		nss_warning("%p: received invalid fdb learn mode %d\n", nss_ctx, fdb_learn);
-		return NSS_TX_FAILURE;
-	}
-
-	nss_bridge_msg_init(&nbm, bridge_if_num, NSS_BRIDGE_MSG_SET_FDB_LEARN,
-				sizeof(struct nss_bridge_set_fdb_learn_msg), NULL, NULL);
-
-	nbm.msg.fdb_learn.mode = fdb_learn;
-
-	return nss_bridge_tx_msg_sync(nss_ctx, &nbm);
-}
-EXPORT_SYMBOL(nss_bridge_tx_set_fdb_learn_msg);
 
 /*
  * nss_bridge_init()

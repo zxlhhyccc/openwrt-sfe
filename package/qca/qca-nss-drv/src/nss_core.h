@@ -32,7 +32,6 @@
 #include <linux/netdevice.h>
 #include <linux/debugfs.h>
 #include <linux/workqueue.h>
-#include <asm/cacheflush.h>
 
 #include <nss_api_if.h>
 #include "nss_phys_if.h"
@@ -102,8 +101,12 @@
 #endif
 
 /*
- * Cache operation
+ * Cache behavior configuration.
  */
+#if (NSS_CACHED_RING == 0)
+#define NSS_CORE_DSB()
+#define NSS_CORE_DMA_CACHE_MAINT(start, size, dir)
+#else
 #define NSS_CORE_DSB() dsb(sy)
 #define NSS_CORE_DMA_CACHE_MAINT(start, size, dir) nss_core_dma_cache_maint(start, size, dir)
 
@@ -127,6 +130,7 @@ static inline void nss_core_dma_cache_maint(void *start, uint32_t size, int dire
 		BUG();
 	}
 }
+#endif
 
 /*
  * NSS max values supported
@@ -149,16 +153,13 @@ static inline void nss_core_dma_cache_maint(void *start, uint32_t size, int dire
 /*
  * N2H/H2N Queue IDs
  */
-#define NSS_IF_N2H_EMPTY_BUFFER_RETURN_QUEUE 0
-#define NSS_IF_N2H_DATA_QUEUE_0 1
-#define NSS_IF_N2H_DATA_QUEUE_1 2
-#define NSS_IF_N2H_DATA_QUEUE_2 3
-#define NSS_IF_N2H_DATA_QUEUE_3 4
-
-#define NSS_IF_H2N_EMPTY_BUFFER_QUEUE 0
-#define NSS_IF_H2N_CMD_QUEUE 1
-#define NSS_IF_H2N_EMPTY_PAGED_BUFFER_QUEUE 2
-#define NSS_IF_H2N_DATA_QUEUE 3
+#define NSS_IF_EMPTY_BUFFER_QUEUE 0
+#define NSS_IF_EMPTY_PAGED_BUFFER_QUEUE 2
+#define NSS_IF_DATA_QUEUE_0 1
+#define NSS_IF_DATA_QUEUE_1 2
+#define NSS_IF_DATA_QUEUE_2 3
+#define NSS_IF_DATA_QUEUE_3 4
+#define NSS_IF_CMD_QUEUE 1
 
 /*
  * NSS Interrupt Causes
@@ -216,16 +217,13 @@ static inline void nss_core_dma_cache_maint(void *start, uint32_t size, int dire
 #define NSS_TX_UNBLOCKED_PROCESSING_WEIGHT 1
 
 /*
- * Cache line size of the NSS.
- */
-#define NSS_CACHE_LINE_SIZE 32
-
-/*
  * Statistics struct
  *
  * INFO: These numbers are based on previous generation chip
  *	These may change in future
  */
+#define NSS_PPPOE_NUM_SESSION_PER_INTERFACE 4
+					/* Number of maximum simultaneous PPPoE sessions per physical interface */
 
 /*
  * NSS Frequency Defines and Values
@@ -276,18 +274,14 @@ static inline void nss_core_dma_cache_maint(void *start, uint32_t size, int dire
 #if (NSS_DT_SUPPORT == 1)
 #define NSSTCM_FREQ		400000000	/* NSS TCM Frequency in Hz */
 
-/*
- * NSS Clock names
- */
+/* NSS Clock names */
 #define NSS_CORE_CLK		"nss-core-clk"
 #define NSS_TCM_SRC_CLK		"nss-tcm-src"
 #define NSS_TCM_CLK		"nss-tcm-clk"
 #define NSS_FABRIC0_CLK		"nss-fab0-clk"
 #define NSS_FABRIC1_CLK		"nss-fab1-clk"
 
-/*
- * NSS Fabric speeds
- */
+/* NSS Fabric speeds */
 #define NSS_FABRIC0_TURBO	533000000
 #define NSS_FABRIC1_TURBO	266500000
 #define NSS_FABRIC0_NOMINAL	400000000
@@ -334,17 +328,6 @@ enum nss_stats_drv {
 	NSS_STATS_DRV_NSS_SKB_COUNT,		/* NSS SKB Pool Count */
 	NSS_STATS_DRV_CHAIN_SEG_PROCESSED,	/* N2H SKB Chain Processed Count */
 	NSS_STATS_DRV_FRAG_SEG_PROCESSED,	/* N2H Frag Processed Count */
-	NSS_STATS_DRV_TX_CMD_QUEUE_FULL,	/* Tx H2N Control packets fail due to queue full */
-#ifdef NSS_MULTI_H2N_DATA_RING_SUPPORT
-	NSS_STATS_DRV_TX_PACKET_QUEUE_0,	/* H2N Data packets on queue0 */
-	NSS_STATS_DRV_TX_PACKET_QUEUE_1,        /* H2N Data packets on queue1 */
-	NSS_STATS_DRV_TX_PACKET_QUEUE_2,        /* H2N Data packets on queue2 */
-	NSS_STATS_DRV_TX_PACKET_QUEUE_3,        /* H2N Data packets on queue3 */
-	NSS_STATS_DRV_TX_PACKET_QUEUE_4,        /* H2N Data packets on queue4 */
-	NSS_STATS_DRV_TX_PACKET_QUEUE_5,        /* H2N Data packets on queue5 */
-	NSS_STATS_DRV_TX_PACKET_QUEUE_6,        /* H2N Data packets on queue6 */
-	NSS_STATS_DRV_TX_PACKET_QUEUE_7,        /* H2N Data packets on queue7 */
-#endif
 	NSS_STATS_DRV_MAX,
 };
 
@@ -497,12 +480,6 @@ struct nss_ctx_instance {
 	uint32_t vphys;			/* Phys mem pointer to virtual register map */
 	uint32_t qgic_phys;		/* Phys mem pointer to QGIC register map */
 	uint32_t load;			/* Load address for this core */
-	unsigned long n2h_ring;		/* Allocated n2h ring buffer */
-	unsigned long h2n_ring;		/* Allocated h2n ring buffer */
-	uint32_t n2h_ring_dma;		/* DMA Address of the n2h_ring */
-	uint32_t h2n_ring_dma;		/* DMA Address of the h2n_ring */
-	uint32_t n2h_ring_total_size;	/* Total size of the n2h_ring */
-	uint32_t h2n_ring_total_size;	/* Total size of the h2n_ring */
 	enum nss_core_state state;	/* State of NSS core */
 	uint32_t c2c_start;		/* C2C start address */
 	struct int_ctx_instance int_ctx[NSS_MAX_IRQ_PER_CORE];
@@ -570,7 +547,6 @@ struct nss_top_instance {
 	uint8_t wifi_handler_id;
 	uint8_t ppe_handler_id;
 	uint8_t pptp_handler_id;
-	uint8_t pppoe_handler_id;
 	uint8_t l2tpv2_handler_id;
 	uint8_t dtls_handler_id;
 	uint8_t gre_handler_id;
@@ -630,8 +606,6 @@ struct nss_top_instance {
 					/* ipip6 tunnel interface event callback function */
 	nss_pptp_msg_callback_t pptp_msg_callback;
 					/* PPTP tunnel interface event callback function */
-	nss_pppoe_msg_callback_t pppoe_msg_callback;
-					/* PPPoE interface event callback function */
 	struct nss_shaper_bounce_registrant bounce_interface_registrants[NSS_MAX_NET_INTERFACES];
 					/* Registrants for interface shaper bounce operations */
 	struct nss_shaper_bounce_registrant bounce_bridge_registrants[NSS_MAX_NET_INTERFACES];
@@ -872,7 +846,7 @@ struct nss_platform_data {
  */
 static inline void nss_core_log_msg_failures(struct nss_ctx_instance *nss_ctx, struct nss_cmn_msg *ncm)
 {
-	if ((ncm->response == NSS_CMN_RESPONSE_ACK) || (ncm->response == NSS_CMN_RESPONSE_NOTIFY)) {
+	if ((ncm->response == NSS_CMN_RESPONSE_ACK) || (ncm->response == NSS_CMM_RESPONSE_NOTIFY)) {
 		return;
 	}
 
@@ -902,8 +876,6 @@ extern int nss_core_handle_napi_emergency(struct napi_struct *napi, int budget);
 extern int32_t nss_core_send_buffer(struct nss_ctx_instance *nss_ctx, uint32_t if_num,
 					struct sk_buff *nbuf, uint16_t qid,
 					uint8_t buffer_type, uint16_t flags);
-extern int32_t nss_core_send_cmd(struct nss_ctx_instance *nss_ctx, void *msg, int size, int buf_size);
-extern int32_t nss_core_send_packet(struct nss_ctx_instance *nss_ctx, struct sk_buff *nbuf, uint32_t if_num, uint32_t flag);
 extern uint32_t nss_core_register_handler(struct nss_ctx_instance *nss_ctx, uint32_t interface, nss_core_rx_callback_t cb, void *app_data);
 extern uint32_t nss_core_unregister_handler(struct nss_ctx_instance *nss_ctx, uint32_t interface);
 void nss_core_update_max_ipv4_conn(int conn);

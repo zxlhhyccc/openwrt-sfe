@@ -65,7 +65,6 @@ enum nss_shaper_config_types {
 	NSS_SHAPER_CONFIG_TYPE_SHAPER_NODE_CHANGE_PARAM,
 	NSS_SHAPER_CONFIG_TYPE_HYBRID_MODE_ENABLE,
 	NSS_SHAPER_CONFIG_TYPE_HYBRID_MODE_DISABLE,
-	NSS_SHAPER_CONFIG_TYPE_SHAPER_NODE_MEM_REQ,
 };
 
 typedef enum nss_shaper_config_types nss_shaper_config_type_t;
@@ -108,10 +107,6 @@ enum nss_shaper_response_types {
 	NSS_SHAPER_RESPONSE_TYPE_PPE_SN_INVALID_LIMIT,
 	NSS_SHAPER_RESPONSE_TYPE_PPE_SN_UCAST_QUEUE_CHANGED,
 	NSS_SHAPER_RESPONSE_TYPE_PPE_SN_MCAST_QUEUE_CHANGED,
-	NSS_SHAPER_RESPONSE_TYPE_CODEL_FQ_MEM_INSUFFICIENT,
-	NSS_SHAPER_RESPONSE_TYPE_CODEL_FQ_COUNT_CHANGE_NOT_ALLOWED,
-	NSS_SHAPER_RESPONSE_TYPE_CODEL_FQ_COUNT_INVALID,
-	NSS_SHAPER_RESPONSE_TYPE_CODEL_MODE_CHANGE_NOT_ALLOWED,
 };
 
 typedef enum nss_shaper_response_types nss_shaper_response_type_t;
@@ -191,22 +186,10 @@ struct nss_shaper_config_codel_alg_param {
  *	Message information for configuring a CoDel shaper node.
  */
 struct nss_shaper_config_codel_param {
-	int32_t qlen_max;	/**< Maximum number of packets that can be enqueued. */
+	int32_t qlen_max;
+			/**< Maximum number of packets that can be enqueued. */
 	struct nss_shaper_config_codel_alg_param cap;
-				/**< Configuration for the CoDel algorithm. */
-	uint32_t flows;		/**< Number of flow hash buckets. */
-	uint32_t flows_mem;	/**< Host allocated memory for flow queues. */
-	uint32_t flows_mem_sz;	/**< Memory size allocated for flow queues. */
-	uint32_t quantum;	/**< Quantum (in bytes) to round-robin the flow buckets. */
-	uint32_t ecn;		/**< 0 - ECN disabled, 1 - ECN enabled. */
-};
-
-/**
- * nss_shaper_config_codel_mem_req
- *	Message to get CoDel memory requirement per flow queue (needed for fq_codel).
- */
-struct nss_shaper_config_codel_mem_req {
-	uint32_t mem_req;	/**< Memory needed per flow queue (in bytes). */
+			/**< Configuration for the CoDel algorithm. */
 };
 
 /**
@@ -462,7 +445,7 @@ struct nss_shaper_config_ppe_sn_detach {
  */
 enum nss_shaper_config_ppe_sn_type {
 	/*
-	 * Scheduler types.
+	 * Scheduler types
 	 */
 	NSS_SHAPER_CONFIG_PPE_SN_TYPE_HTB,
 	NSS_SHAPER_CONFIG_PPE_SN_TYPE_HTB_GROUP,
@@ -473,7 +456,7 @@ enum nss_shaper_config_ppe_sn_type {
 	NSS_SHAPER_CONFIG_PPE_SN_SCH_MAX = 0xFF,
 
 	/*
-	 * Queue types.
+	 * Queue types
 	 */
 	NSS_SHAPER_CONFIG_PPE_SN_TYPE_FIFO,
 	NSS_SHAPER_CONFIG_PPE_SN_TYPE_RED,
@@ -514,9 +497,6 @@ struct nss_shaper_node_config {
 
 		struct nss_shaper_config_codel_param codel_param;
 			/**< Configure a CoDel shaper node. */
-
-		struct nss_shaper_config_codel_mem_req codel_mem_req;
-			/**< Get CoDel memory requirement. */
 
 		struct nss_shaper_config_tbl_attach tbl_attach;
 			/**< Attach a shaper node to a TBL shaper node. */
@@ -565,58 +545,10 @@ struct nss_shaper_node_config {
 };
 
 /**
- * nss_shaper_node_codel_fq_stats_delta
- *	CoDel flow queue mode statistics sent as deltas.
- */
-struct nss_shaper_node_codel_fq_stats_delta {
-	uint32_t new_flow_cnt;		/**< Total number of new flows seen. */
-	uint32_t ecn_mark_cnt;		/**< Number of packets marked with ECN. */
-};
-
-/**
- * nss_shaper_node_codel_fq_stats
- *      CoDel flow queue mode statistics.
- */
-struct nss_shaper_node_codel_fq_stats {
-	struct nss_shaper_node_codel_fq_stats_delta delta;
-					/**< CoDel flow queue statistics sent as deltas. */
-	uint32_t new_flows_len;		/**< Current number of new flows. */
-	uint32_t old_flows_len;		/**< Current number of old flows. */
-	uint32_t maxpacket;		/**< Largest packet seen so far. */
-};
-
-/**
- * nss_shaper_node_codel_sq_stats
- *      CoDel single queue mode statistics.
- */
-struct nss_shaper_node_codel_sq_stats {
-	/**
-	 * Maximum amount of time (in milliseconds) that a packet was in this shaper
-	 * node before being dequeued.
-	 */
-        uint32_t packet_latency_peak_msec_dequeued;
-
-	/**
-	 * Maximum amount of time (in milliseconds) that a packet was in this shaper
-	 * node before being dropped.
-	 */
-        uint32_t packet_latency_peak_msec_dropped;
-};
-
-/**
- * nss_shaper_node_codel_stats
- *      CoDel shaper node statistics.
- */
-struct nss_shaper_node_codel_stats {
-        struct nss_shaper_node_codel_sq_stats sq;   /**< Single queue mode statistics. */
-        struct nss_shaper_node_codel_fq_stats fq;   /**< Flow queue mode statistics. */
-};
-
-/**
- * nss_shaper_node_stats_delta
+ * nss_shaper_node_basic_statistics_delta
  *	Statistics that are sent as deltas.
  */
-struct nss_shaper_node_stats_delta {
+struct nss_shaper_node_basic_statistics_delta {
 	uint32_t enqueued_bytes;	/**< Bytes enqueued successfully. */
 	uint32_t enqueued_packets;	/**< Packets enqueued successfully. */
 
@@ -651,44 +583,13 @@ struct nss_shaper_node_stats_delta {
 	 * Number of times any queue limit was overrun, leading to packet drops.
 	 */
 	uint32_t queue_overrun;
-
-	uint32_t unused[4];		/**< Reserved for future statistics expansion. */
 };
 
 /**
- * nss_shaper_node_stats
- *	Common shaper node statistics.
+ * nss_shaper_shaper_node_basic_stats_get
+ *	Basic statistics for a shaper node.
  */
-struct nss_shaper_node_stats {
-	uint32_t qlen_bytes;	/**< Total size of packets waiting in the queue. */
-	uint32_t qlen_packets;	/**< Number of packets waiting in the queue. */
-	uint32_t unused[4];	/**< Reserved for future statistics expansion. */
-	struct nss_shaper_node_stats_delta delta;
-				/**< Statistics that are sent as deltas. */
-};
-
-/**
- * nss_shaper_node_stats_response
- *	Statistics response for shaper nodes.
- */
-struct nss_shaper_node_stats_response {
-	struct nss_shaper_node_stats sn_stats;	/**< Common shaper node statistics. */
-
-	/**
-	 * All shaper nodes that need to maintain unique statistics need
-	 * to add their statistics structure here.
-	 */
-	union {
-		struct nss_shaper_node_codel_stats codel;
-						/**< CoDel specific statistics. */
-	} per_sn_stats;				/**< Shaper specific statistics. */
-};
-
-/**
- * nss_shaper_node_stats_get
- *	Statistics of a shaper node.
- */
-struct nss_shaper_node_stats_get {
+struct nss_shaper_shaper_node_basic_stats_get {
 
 	/*
 	 * Request
@@ -698,8 +599,37 @@ struct nss_shaper_node_stats_get {
 	/*
 	 * Response
 	 */
-	struct nss_shaper_node_stats_response response;
-				/**< Shaper node statistics response */
+	uint32_t qlen_bytes;
+			/**< Total size of packets waiting in the queue. */
+	uint32_t qlen_packets;
+			/**< Number of packets waiting in the queue. */
+
+	/**
+	 * Maximum amount of time (in milliseconds) that a packet was in this shaper
+	 * node before being dequeued.
+	 */
+	uint32_t packet_latency_peak_msec_dequeued;
+
+	/**
+	 * Minimum amount of time (in milliseconds) that a packet was in this shaper
+	 * node before being dequeued.
+	 */
+	uint32_t packet_latency_minimum_msec_dequeued;
+
+	/**
+	 * Maximum amount of time (in milliseconds) that a packet was in this shaper
+	 * node before being dropped.
+	 */
+	uint32_t packet_latency_peak_msec_dropped;
+
+	/**
+	 * Minimum amount of time (in milliseconds) that a packet was in this shaper
+	 * node before being dropped.
+	 */
+	uint32_t packet_latency_minimum_msec_dropped;
+
+	struct nss_shaper_node_basic_statistics_delta delta;
+			/**< Statistics that are sent as deltas. */
 };
 
 /**
@@ -726,8 +656,8 @@ struct nss_shaper_configure {
 				/**< Set a shaper to operate in Hybrid mode. */
 		struct nss_shaper_node_config shaper_node_config;
 				/**< Configuration message for any type of shaper node. */
-		struct nss_shaper_node_stats_get shaper_node_stats_get;
-				/**< Statistics for a shaper node. */
+		struct nss_shaper_shaper_node_basic_stats_get shaper_node_basic_stats_get;
+				/**< Basic statistics for a shaper node. */
 	} msg;			/**< Types of configuration messages. */
 };
 

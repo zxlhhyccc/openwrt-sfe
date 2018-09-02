@@ -66,9 +66,7 @@ static bool nss_gre_redir_verify_ifnum(uint32_t if_num)
 	return type == NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_WIFI_HOST_INNER ||
 			type == NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_WIFI_OFFL_INNER ||
 			type == NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_SJACK_INNER ||
-			type == NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_OUTER ||
-			type == NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_EXCEPTION_US ||
-			type == NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_EXCEPTION_DS;
+			type == NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_OUTER;
 }
 
 /*
@@ -130,23 +128,11 @@ static void nss_gre_redir_tunnel_update_stats(struct nss_ctx_instance *nss_ctx, 
 		tun_stats[i].split_sg_alloc_fail += ngss->split_sg_alloc_fail;
 		tun_stats[i].split_linear_copy_fail += ngss->split_linear_copy_fail;
 		tun_stats[i].split_not_enough_tailroom += ngss->split_not_enough_tailroom;
-		tun_stats[i].decap_eapol_frames += ngss->decap_eapol_frames;
 		tun_stats[i].node_stats.rx_dropped[0] += nss_cmn_rx_dropped_sum(&(ngss->node_stats));
 		for (j = 0; j < NSS_GRE_REDIR_NUM_RADIO; j++) {
 			tun_stats[i].offl_rx_pkts[j] += ngss->offl_rx_pkts[j];
 		}
 
-		break;
-
-	case NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_EXCEPTION_US:
-		tun_stats[i].exception_us_rx += ngss->node_stats.rx_packets;
-		tun_stats[i].exception_us_tx += ngss->node_stats.tx_packets;
-		break;
-
-	case NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_EXCEPTION_DS:
-		tun_stats[i].exception_ds_rx += ngss->node_stats.rx_packets;
-		tun_stats[i].exception_ds_tx += ngss->node_stats.tx_packets;
-		tun_stats[i].exception_ds_invalid_dst_drop += ngss->exception_ds_invalid_dst_drop;
 		break;
 	}
 
@@ -187,7 +173,7 @@ static void nss_gre_redir_msg_handler(struct nss_ctx_instance *nss_ctx, struct n
 	 * Update the callback and app_data for NOTIFY messages, gre sends all notify messages
 	 * to the same callback/app_data.
 	 */
-	if (ncm->response == NSS_CMN_RESPONSE_NOTIFY) {
+	if (ncm->response == NSS_CMM_RESPONSE_NOTIFY) {
 		ncm->cb = (nss_ptr_t)nss_ctx->nss_top->if_rx_msg_callback[ncm->interface];
 		ncm->app_data = (nss_ptr_t)nss_ctx->nss_rx_interface_handlers[nss_ctx->id][ncm->interface].app_data;
 	}
@@ -310,9 +296,7 @@ int nss_gre_redir_alloc_and_register_node(struct net_device *dev,
 	if ((type != NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_WIFI_HOST_INNER) &&
 			(type != NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_WIFI_OFFL_INNER) &&
 			(type != NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_SJACK_INNER) &&
-			(type != NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_OUTER) &&
-			(type != NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_EXCEPTION_US) &&
-			(type != NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_EXCEPTION_DS)) {
+			(type != NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_OUTER)) {
 
 		nss_warning("%p: Unknown type %u\n", dev, type);
 		return -1;
@@ -493,7 +477,16 @@ EXPORT_SYMBOL(nss_gre_redir_get_stats);
  */
 nss_tx_status_t nss_gre_redir_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_gre_redir_msg *msg)
 {
+	struct nss_gre_redir_msg *nm;
 	struct nss_cmn_msg *ncm = &msg->cm;
+	struct sk_buff *nbuf;
+	int32_t status;
+
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: GRE msg dropped as core not ready", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
 
 	/*
 	 * Sanity check the message
@@ -514,7 +507,34 @@ nss_tx_status_t nss_gre_redir_tx_msg(struct nss_ctx_instance *nss_ctx, struct ns
 		return NSS_TX_FAILURE;
 	}
 
-	return nss_core_send_cmd(nss_ctx, msg, sizeof(*msg), NSS_NBUF_PAYLOAD_SIZE);
+	if (nss_cmn_get_msg_len(ncm) > sizeof(struct nss_gre_redir_msg)) {
+		nss_warning("%p: message length is invalid: %d", nss_ctx, nss_cmn_get_msg_len(ncm));
+		return NSS_TX_FAILURE;
+	}
+
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
+		nss_warning("%p: msg dropped as command allocation failed", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	/*
+	 * Copy the message to our skb
+	 */
+	nm = (struct nss_gre_redir_msg *)skb_put(nbuf, sizeof(struct nss_gre_redir_msg));
+	memcpy(nm, msg, sizeof(struct nss_gre_redir_msg));
+
+	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (status != NSS_CORE_STATUS_SUCCESS) {
+		dev_kfree_skb_any(nbuf);
+		nss_warning("%p: Unable to enqueue 'gre message' \n", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_REQ]);
+	return NSS_TX_SUCCESS;
 }
 EXPORT_SYMBOL(nss_gre_redir_tx_msg);
 
@@ -555,22 +575,43 @@ EXPORT_SYMBOL(nss_gre_redir_tx_msg_sync);
  */
 nss_tx_status_t nss_gre_redir_tx_buf(struct nss_ctx_instance *nss_ctx, struct sk_buff *os_buf, uint32_t if_num)
 {
+	int32_t status;
 	uint32_t type;
 
 	nss_trace("%p: gre_redir If Tx packet, id:%d, data=%p", nss_ctx, if_num, os_buf->data);
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
 
 	/*
 	 * We expect Tx packets to the tunnel only from an interface of
 	 * type GRE_REDIR_WIFI_HOST_INNER.
 	 */
 	type = nss_dynamic_interface_get_type(nss_ctx, if_num);
-	if (!((type == NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_WIFI_HOST_INNER)
-		|| (type == NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_EXCEPTION_DS))) {
+	if (type != NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_WIFI_HOST_INNER) {
 		nss_warning("%p: Unknown type for interface %u\n", nss_ctx, type);
 		return NSS_TX_FAILURE_BAD_PARAM;
 	}
 
-	return nss_core_send_packet(nss_ctx, os_buf, if_num, 0);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: 'Phys If Tx' packet dropped as core not ready", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
+
+	status = nss_core_send_buffer(nss_ctx, if_num, os_buf, NSS_IF_DATA_QUEUE_0, H2N_BUFFER_PACKET, 0);
+	if (unlikely(status != NSS_CORE_STATUS_SUCCESS)) {
+		nss_warning("%p: Unable to enqueue 'Phys If Tx' packet\n", nss_ctx);
+		if (status == NSS_CORE_STATUS_FAILURE_QUEUE) {
+			return NSS_TX_FAILURE_QUEUE;
+		}
+
+		return NSS_TX_FAILURE;
+	}
+
+	/*
+	 * Kick the NSS awake so it can process our new entry.
+	 */
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_PACKET]);
+	return NSS_TX_SUCCESS;
 }
 EXPORT_SYMBOL(nss_gre_redir_tx_buf);
 

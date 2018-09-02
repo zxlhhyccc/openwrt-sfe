@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -55,7 +55,7 @@ static void nss_wifi_vdev_handler(struct nss_ctx_instance *nss_ctx, struct nss_c
 
 	}
 
-	if (ncm->response == NSS_CMN_RESPONSE_NOTIFY) {
+	if (ncm->response == NSS_CMM_RESPONSE_NOTIFY) {
 		ncm->cb = (nss_ptr_t)nss_ctx->nss_top->if_rx_msg_callback[ncm->interface];
 		ncm->app_data = (nss_ptr_t)nss_ctx->subsys_dp_register[ncm->interface].ndev;
 	}
@@ -75,7 +75,7 @@ static void nss_wifi_vdev_handler(struct nss_ctx_instance *nss_ctx, struct nss_c
  * nss_wifi_vdev_msg_init()
  *	Initialize wifi message.
  */
-void nss_wifi_vdev_msg_init(struct nss_wifi_vdev_msg *nim, uint32_t if_num, uint32_t type, uint32_t len,
+void nss_wifi_vdev_msg_init(struct nss_wifi_vdev_msg *nim, uint16_t if_num, uint32_t type, uint32_t len,
 			nss_wifi_vdev_msg_callback_t *cb, void *app_data)
 {
 	nss_cmn_msg_init(&nim->cm, if_num, type, len, (void *)cb, app_data);
@@ -88,9 +88,19 @@ EXPORT_SYMBOL(nss_wifi_vdev_msg_init);
  */
 nss_tx_status_t nss_wifi_vdev_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_wifi_vdev_msg *msg)
 {
+	struct nss_wifi_vdev_msg *nm;
 	struct nss_cmn_msg *ncm = &msg->cm;
+	struct sk_buff *nbuf;
+	bool status;
 
 	nss_trace("%p: Sending wifi vdev message on interface :%d", nss_ctx, ncm->interface);
+
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: wifi vdev message dropped as core not ready", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
 
 	/*
 	 * Sanity checks on the message
@@ -109,7 +119,38 @@ nss_tx_status_t nss_wifi_vdev_tx_msg(struct nss_ctx_instance *nss_ctx, struct ns
 		return NSS_TX_FAILURE;
 	}
 
-	return nss_core_send_cmd(nss_ctx, msg, sizeof(*msg), NSS_NBUF_PAYLOAD_SIZE);
+	if (nss_cmn_get_msg_len(ncm) > sizeof(struct nss_wifi_vdev_msg)) {
+		nss_warning("%p: wifi vdev message length is invalid: %d", nss_ctx, nss_cmn_get_msg_len(ncm));
+		return NSS_TX_FAILURE;
+	}
+
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		spin_lock_bh(&nss_ctx->nss_top->stats_lock);
+		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
+		spin_unlock_bh(&nss_ctx->nss_top->stats_lock);
+		nss_warning("%p: wifi vdev message dropped as command allocation failed", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	/*
+	 * Copy the message to our skb
+	 */
+	nm = (struct nss_wifi_vdev_msg *)skb_put(nbuf, sizeof(struct nss_wifi_vdev_msg));
+	memcpy(nm, msg, sizeof(struct nss_wifi_vdev_msg));
+
+	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (status != NSS_CORE_STATUS_SUCCESS) {
+		dev_kfree_skb_any(nbuf);
+		nss_warning("%p: Unable to enqueue 'wifi vdev message'", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_REQ]);
+
+	return status;
 }
 EXPORT_SYMBOL(nss_wifi_vdev_tx_msg);
 
@@ -148,7 +189,7 @@ nss_tx_status_t nss_wifi_vdev_tx_msg_ext(struct nss_ctx_instance *nss_ctx, struc
 		return NSS_TX_FAILURE;
 	}
 
-	status = nss_core_send_buffer(nss_ctx, 0, os_buf, NSS_IF_H2N_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	status = nss_core_send_buffer(nss_ctx, 0, os_buf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
 	if (status != NSS_CORE_STATUS_SUCCESS) {
 		nss_warning("%p: Unable to enqueue 'wifi vdev message'", nss_ctx);
 		return NSS_TX_FAILURE;
@@ -158,7 +199,7 @@ nss_tx_status_t nss_wifi_vdev_tx_msg_ext(struct nss_ctx_instance *nss_ctx, struc
 
 	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_REQ]);
 
-return status;
+	return status;
 }
 EXPORT_SYMBOL(nss_wifi_vdev_tx_msg_ext);
 
@@ -168,9 +209,35 @@ EXPORT_SYMBOL(nss_wifi_vdev_tx_msg_ext);
  */
 nss_tx_status_t nss_wifi_vdev_tx_buf(struct nss_ctx_instance *nss_ctx, struct sk_buff *os_buf, uint32_t if_num)
 {
+	int32_t status;
+
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+
 	BUG_ON(((if_num < NSS_DYNAMIC_IF_START) || (if_num >= (NSS_DYNAMIC_IF_START + NSS_MAX_DYNAMIC_INTERFACES))));
 
-	return nss_core_send_packet(nss_ctx, os_buf, if_num, 0);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: 'NSS WIFI VAP If Tx' packet dropped as core not ready", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
+
+	status = nss_core_send_buffer(nss_ctx, if_num, os_buf, NSS_IF_DATA_QUEUE_0, H2N_BUFFER_PACKET, 0);
+	if (unlikely(status != NSS_CORE_STATUS_SUCCESS)) {
+		nss_warning("%p: Unable to enqueue 'nss wifi vdev if tx' packet", nss_ctx);
+		if (status == NSS_CORE_STATUS_FAILURE_QUEUE) {
+			return NSS_TX_FAILURE_QUEUE;
+		}
+
+		return NSS_TX_FAILURE;
+	}
+
+	/*
+	 * Kick the NSS awake so it can process our new entry.
+	 */
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_PACKET]);
+
+	return NSS_TX_SUCCESS;
 }
 EXPORT_SYMBOL(nss_wifi_vdev_tx_buf);
 
@@ -189,7 +256,7 @@ nss_tx_status_t nss_wifi_vdev_set_next_hop(struct nss_ctx_instance *ctx, int if_
 	}
 
 	next_hop_msg->ifnumber = next_hop;
-	nss_wifi_vdev_msg_init(wifivdevmsg, if_num, NSS_WIFI_VDEV_SET_NEXT_HOP, sizeof(struct nss_wifi_vdev_set_next_hop_msg), NULL, NULL);
+	nss_wifi_vdev_msg_init(wifivdevmsg, if_num, NSS_WIFI_VDEV_SET_NEXT_HOP, 0, NULL, NULL);
 
 	status = nss_wifi_vdev_tx_msg(ctx, wifivdevmsg);
 	if (status != NSS_TX_SUCCESS) {
@@ -200,36 +267,6 @@ nss_tx_status_t nss_wifi_vdev_set_next_hop(struct nss_ctx_instance *ctx, int if_
 	return status;
 }
 EXPORT_SYMBOL(nss_wifi_vdev_set_next_hop);
-
-/*
- * nss_wifi_vdev_set_next_hop()
- */
-nss_tx_status_t nss_wifi_vdev_set_peer_next_hop(struct nss_ctx_instance *ctx, uint32_t nss_if, uint8_t *addr, uint32_t next_hop_if)
-{
-	nss_tx_status_t status;
-	struct nss_wifi_vdev_msg *wifivdevmsg = kzalloc(sizeof(struct nss_wifi_vdev_msg), GFP_KERNEL);
-	struct nss_wifi_vdev_set_peer_next_hop_msg *peer_next_hop_msg = &wifivdevmsg->msg.vdev_set_peer_next_hp;
-
-	if (!wifivdevmsg) {
-		nss_warning("%p: Unable to allocate next hop message", ctx);
-		return NSS_TX_FAILURE;
-	}
-
-	memcpy(peer_next_hop_msg->peer_mac_addr, addr, ETH_ALEN);
-
-	peer_next_hop_msg->if_num = next_hop_if;
-	nss_wifi_vdev_msg_init(wifivdevmsg, nss_if, NSS_WIFI_VDEV_SET_PEER_NEXT_HOP,
-			sizeof(struct nss_wifi_vdev_set_peer_next_hop_msg), NULL, NULL);
-
-	status = nss_wifi_vdev_tx_msg(ctx, wifivdevmsg);
-	if (status != NSS_TX_SUCCESS) {
-		nss_warning("%p: Unable to send peer next hop message", ctx);
-	}
-
-	kfree(wifivdevmsg);
-	return status;
-}
-EXPORT_SYMBOL(nss_wifi_vdev_set_peer_next_hop);
 
 /*
  * nss_wifi_vdev_set_dp_type()

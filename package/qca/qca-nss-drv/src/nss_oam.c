@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2016-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2017 The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -53,7 +53,7 @@ static void nss_oam_rx_msg_handler(struct nss_ctx_instance *nss_ctx, struct nss_
 	 */
 	nss_core_log_msg_failures(nss_ctx, ncm);
 
-	if (ncm->response == NSS_CMN_RESPONSE_NOTIFY) {
+	if (ncm->response == NSS_CMM_RESPONSE_NOTIFY) {
 		ncm->cb = (nss_ptr_t)nss_top_main.oam_callback;
 		ncm->app_data = (nss_ptr_t)nss_top_main.oam_ctx;
 	}
@@ -72,7 +72,16 @@ static void nss_oam_rx_msg_handler(struct nss_ctx_instance *nss_ctx, struct nss_
  */
 nss_tx_status_t nss_oam_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_oam_msg *nom)
 {
+	const uint32_t msg_sz = sizeof(struct nss_oam_msg);
 	struct nss_cmn_msg *ncm = &nom->cm;
+	struct sk_buff *nbuf;
+	int32_t status;
+
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
+		nss_warning("%p: oam msg dropped as core not ready", nss_ctx);
+		return NSS_TX_FAILURE_NOT_READY;
+	}
 
 	if (ncm->type > NSS_OAM_MSG_TYPE_MAX) {
 		nss_warning("%p: CMD type for oam module is invalid - %d", nss_ctx, ncm->type);
@@ -84,7 +93,38 @@ nss_tx_status_t nss_oam_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_oam_
 		return NSS_TX_FAILURE;
 	}
 
-	return nss_core_send_cmd(nss_ctx, nom, sizeof(*nom), NSS_NBUF_PAYLOAD_SIZE);
+	if (nss_cmn_get_msg_len(ncm) > msg_sz) {
+		nss_warning("%p: tx request with invalid size: %d", nss_ctx, nss_cmn_get_msg_len(ncm));
+		return NSS_TX_FAILURE_TOO_SHORT;
+	}
+
+	/*
+	 * Check whether msg_sz exceeds max payload size
+	 */
+	BUG_ON(msg_sz > NSS_NBUF_PAYLOAD_SIZE);
+
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
+		nss_warning("%p: msg dropped as command allocation failed", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	/*
+	 * Copy the message to our skb.
+	 */
+	memcpy(skb_put(nbuf, msg_sz), nom, msg_sz);
+
+	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (status != NSS_CORE_STATUS_SUCCESS) {
+		dev_kfree_skb_any(nbuf);
+		nss_warning("%p: unable to enqueue OAM msg\n", nss_ctx);
+		return NSS_TX_FAILURE;
+	}
+
+	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_REQ]);
+	return NSS_TX_SUCCESS;
 }
 EXPORT_SYMBOL(nss_oam_tx_msg);
 

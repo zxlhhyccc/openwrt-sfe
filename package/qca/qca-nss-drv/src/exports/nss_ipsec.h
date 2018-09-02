@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -61,7 +61,6 @@ enum nss_ipsec_msg_type {
 	NSS_IPSEC_MSG_TYPE_SYNC_SA_STATS = 4,
 	NSS_IPSEC_MSG_TYPE_SYNC_FLOW_STATS = 5,
 	NSS_IPSEC_MSG_TYPE_SYNC_NODE_STATS = 6,
-	NSS_IPSEC_MSG_TYPE_CONFIGURE_NODE = 7,
 	NSS_IPSEC_MSG_TYPE_MAX
 };
 
@@ -190,15 +189,6 @@ struct nss_ipsec_rule {
 };
 
 /**
- * nss_ipsec_configure_node
- *	Push message for setting IPsec inline mode and initializing DMA rings.
- */
-struct nss_ipsec_configure_node {
-	bool dma_redirect;	/**< Program redirect DMA ring. */
-	bool dma_lookaside;	/**< Program lookaside DMA ring. */
-};
-
-/**
  * nss_ipsec_sa_stats
  *	Packet statistics per security association.
  */
@@ -240,8 +230,6 @@ struct nss_ipsec_node_stats {
 	uint32_t linearized;		/**< Packet is linear. */
 	uint32_t exceptioned;		/**< Packets exception from the NSS. */
 	uint32_t fail_enqueue;		/**< Packets failed to enqueue. */
-	uint32_t redir_rx;		/**< Packets received in redirect ring. */
-	uint32_t fail_redir;		/**< Packets dropped in redirect ring. */
 };
 
 /**
@@ -272,8 +260,6 @@ struct nss_ipsec_msg {
 	union {
 		struct nss_ipsec_rule rule;
 				/**< IPsec rule message. */
-		struct nss_ipsec_configure_node node;
-				/**< IPsec node message. */
 		union nss_ipsec_stats stats;
 				/**< Retrieve statistics for the tunnel. */
 	} msg;			/**< Message payload. */
@@ -319,30 +305,6 @@ typedef void (*nss_ipsec_buf_callback_t)(struct net_device *netdev, struct sk_bu
  * Status of the Tx operation.
  */
 extern nss_tx_status_t nss_ipsec_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_ipsec_msg *msg);
-
-/**
- * nss_ipsec_tx_msg_sync
- *	Sends IPsec messages synchronously.
- *
- * @datatypes
- * nss_ctx_instance \n
- * nss_ipsec_msg_type \n
- * nss_ipsec_msg \n
- * nss_ipsec_error_type
- *
- * @param[in]     nss_ctx  Pointer to the NSS context.
- * @param[in]     if_num   Configuration interface number.
- * @param[in]     type     Type of the message.
- * @param[in]     len      Size of the payload.
- * @param[in]     nim      Pointer to the message data.
- * @param[in,out] resp     Response for the configuration.
- *
- * @return
- * Status of the Tx operation.
- */
-extern nss_tx_status_t nss_ipsec_tx_msg_sync(struct nss_ctx_instance *nss_ctx, uint32_t if_num,
-						enum nss_ipsec_msg_type type, uint16_t len,
-						struct nss_ipsec_msg *nim, enum nss_ipsec_error_type *resp);
 
 /**
  * nss_ipsec_tx_buf
@@ -445,17 +407,6 @@ extern void nss_ipsec_data_unregister(struct nss_ctx_instance *ctx, uint32_t if_
 extern struct nss_ctx_instance *nss_ipsec_get_context(void);
 
 /**
- * nss_ipsec_get_ifnum
- *	Gets the IPsec interface number with a core ID.
- *
- * @param[in] if_num  NSS interface number.
- *
- * @return
- * Interface number with the core ID.
- */
-extern int32_t nss_ipsec_get_ifnum(int32_t if_num);
-
-/**
  * nss_ipsec_msg_init
  *	Initializes an IPsec message.
  *
@@ -502,42 +453,6 @@ extern int32_t nss_ipsec_get_decap_interface(void);
  * NSS interface number.
  */
 extern int32_t nss_ipsec_get_data_interface(void);
-
-/**
- * nss_ipsec_ppe_port_config
- *	Configure Packet Processing Engine IPsec port.
- *
- * @datatypes
- * nss_ctx_instance \n
- * net_device
- *
- * @param[in] ctx     Pointer to the context of the HLOS driver.
- * @param[in] netdev  Pointer to the associated network device.
- * @param[in] if_num  Data interface number.
- * @param[in] vsi_num Virtual switch instance number.
- *
- * @return
- * True if successful, else false.
- */
-extern bool nss_ipsec_ppe_port_config(struct nss_ctx_instance *ctx, struct net_device *netdev,
-				uint32_t if_num, uint32_t vsi_num);
-
-/**
- * nss_ipsec_ppe_mtu_update()
- *	Configure Packet Processing Engine MTU for IPsec in-line.
- *
- * @datatypes
- * nss_ctx_instance \n
- *
- * @param[in] ctx     Pointer to the context of the HLOS driver.
- * @param[in] if_num  Data interface number.
- * @param[in] mtu     Maximum transmission unit of Interface number.
- * @param[in] mru     Maximum Receive unit of Interface number.
- *
- * @return
- * True if successful, else false.
- */
-bool nss_ipsec_ppe_mtu_update(struct nss_ctx_instance *ctx, uint32_t if_num, uint16_t mtu, uint16_t mru);
 
 /**
  * @}

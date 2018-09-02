@@ -25,10 +25,7 @@
 static int8_t *nss_dtls_stats_session_str[NSS_DTLS_STATS_SESSION_MAX] = {
 	"RX_PKTS",
 	"TX_PKTS",
-	"RX_DROPPED_0",
-	"RX_DROPPED_1",
-	"RX_DROPPED_2",
-	"RX_DROPPED_3",
+	"RX_DROPPED",
 	"RX_AUTH_DONE",
 	"TX_AUTH_DONE",
 	"RX_CIPHER_DONE",

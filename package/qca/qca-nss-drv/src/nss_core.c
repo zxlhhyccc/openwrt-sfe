@@ -33,7 +33,7 @@
 
 #define NSS_DEFAULT_QUEUE_LIMIT 256	/* Default NSS packet queue limit. */
 
-#if (NSS_SKB_REUSE_SUPPORT == 1)
+#if (NSS_SKB_RECYCLE_SUPPORT == 1)
 /*
  * We have validated the skb recycling code within the NSS for the
  * following kernel versions. Before enabling the driver in new kernels,
@@ -49,7 +49,7 @@
 (((LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(4, 5, 0))))))
 #error "Check skb recycle code in this file to match Linux version"
 #endif
-#endif /* NSS_SKB_REUSE_SUPPORT */
+#endif /* NSS_SKB_RECYCLE_SUPPORT */
 
 static int max_ipv4_conn = NSS_DEFAULT_NUM_CONN;
 module_param(max_ipv4_conn, int, S_IRUGO);
@@ -441,22 +441,41 @@ case3:
  * nss_send_ddr_info()
  *	Send DDR info to NSS
  */
-static void nss_send_ddr_info(struct nss_ctx_instance *nss_own)
+static int32_t nss_send_ddr_info(struct nss_ctx_instance *nss_own)
 {
-	struct nss_n2h_msg nnm;
-	struct nss_cmn_msg *ncm = &nnm.cm;
-	uint32_t ret;
+	struct sk_buff *nbuf;
+	int32_t status;
+	struct nss_n2h_msg *nnm;
+	atomic64_t *stats;
+
 	nss_info("%p: send DDR info\n", nss_own);
 
-	nss_cmn_msg_init(ncm, NSS_N2H_INTERFACE, NSS_TX_DDR_INFO_VIA_N2H_CFG,
+	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
+	if (unlikely(!nbuf)) {
+		struct nss_top_instance *nss_top = nss_own->nss_top;
+		stats = &nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS];
+
+		NSS_PKT_STATS_INCREMENT(nss_own, stats);
+		nss_warning("%p: Unable to allocate memory for 'tx DDR info'", nss_own);
+		return NSS_CORE_STATUS_FAILURE;
+	}
+
+	nnm = (struct nss_n2h_msg *)skb_put(nbuf, sizeof(struct nss_n2h_msg));
+	nss_cmn_msg_init(&nnm->cm, NSS_N2H_INTERFACE, NSS_TX_DDR_INFO_VIA_N2H_CFG,
 			sizeof(struct nss_mmu_ddr_info), NULL, NULL);
 
-	nss_get_ddr_info(&nnm.msg.mmu, "memory");
+	nss_get_ddr_info(&nnm->msg.mmu, "memory");
 
-	ret = nss_core_send_cmd(nss_own, &nnm, sizeof(nnm), NSS_NBUF_PAYLOAD_SIZE);
-	if (ret != NSS_TX_SUCCESS) {
-		nss_info_always("%p: Failed to send DDR info for core %d\n", nss_own, nss_own->id);
+	status = nss_core_send_buffer(nss_own, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
+	if (unlikely(status != NSS_CORE_STATUS_SUCCESS)) {
+		dev_kfree_skb_any(nbuf);
+		nss_warning("%p: Unable to enqueue 'tx DDR info'\n", nss_own);
+		return NSS_CORE_STATUS_FAILURE;
 	}
+
+	nss_hal_send_interrupt(nss_own, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
+
+	return NSS_CORE_STATUS_SUCCESS;
 }
 
 /*
@@ -466,23 +485,23 @@ static void nss_send_ddr_info(struct nss_ctx_instance *nss_own)
 static inline uint16_t nss_core_cause_to_queue(uint16_t cause)
 {
 	if (likely(cause == NSS_N2H_INTR_DATA_QUEUE_0)) {
-		return NSS_IF_N2H_DATA_QUEUE_0;
+		return NSS_IF_DATA_QUEUE_0;
 	}
 
 	if (likely(cause == NSS_N2H_INTR_DATA_QUEUE_1)) {
-		return NSS_IF_N2H_DATA_QUEUE_1;
+		return NSS_IF_DATA_QUEUE_1;
 	}
 
 	if (likely(cause == NSS_N2H_INTR_DATA_QUEUE_2)) {
-		return NSS_IF_N2H_DATA_QUEUE_2;
+		return NSS_IF_DATA_QUEUE_2;
 	}
 
 	if (likely(cause == NSS_N2H_INTR_DATA_QUEUE_3)) {
-		return NSS_IF_N2H_DATA_QUEUE_3;
+		return NSS_IF_DATA_QUEUE_3;
 	}
 
 	if (likely(cause == NSS_N2H_INTR_EMPTY_BUFFER_QUEUE)) {
-		return NSS_IF_N2H_EMPTY_BUFFER_RETURN_QUEUE;
+		return NSS_IF_EMPTY_BUFFER_QUEUE;
 	}
 
 	/*
@@ -593,8 +612,6 @@ static inline void nss_core_handle_virt_if_pkt(struct nss_ctx_instance *nss_ctx,
 
 	uint32_t xmit_ret;
 
-	uint16_t queue_offset = 0;
-
 	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_top->stats_drv[NSS_STATS_DRV_RX_VIRTUAL]);
 
 	/*
@@ -639,15 +656,6 @@ static inline void nss_core_handle_virt_if_pkt(struct nss_ctx_instance *nss_ctx,
 	}
 
 	/*
-	 * Mimic Linux behavior to allow multi-queue netdev choose which queue to use
-	 */
-	if (ndev->netdev_ops->ndo_select_queue) {
-		queue_offset = ndev->netdev_ops->ndo_select_queue(ndev, nbuf, NULL, NULL);
-	}
-
-	skb_set_queue_mapping(nbuf, queue_offset);
-
-	/*
 	 * Send the packet to virtual interface
 	 * NOTE: Invoking this will BYPASS any assigned QDisc - this is OKAY
 	 * as TX packets out of the NSS will have been shaped inside the NSS.
@@ -668,13 +676,12 @@ static inline void nss_core_handle_buffer_pkt(struct nss_ctx_instance *nss_ctx,
 						unsigned int interface_num,
 						struct sk_buff *nbuf,
 						struct napi_struct *napi,
-						uint16_t flags, uint16_t qid)
+						uint16_t flags)
 {
 	struct nss_top_instance *nss_top = nss_ctx->nss_top;
 	struct nss_subsystem_dataplane_register *subsys_dp_reg = &nss_ctx->subsys_dp_register[interface_num];
 	struct net_device *ndev = NULL;
 	nss_phys_if_rx_callback_t cb;
-	uint16_t queue_offset = qid - NSS_IF_N2H_DATA_QUEUE_0;
 
 	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_top->stats_drv[NSS_STATS_DRV_RX_PACKET]);
 
@@ -703,13 +710,6 @@ static inline void nss_core_handle_buffer_pkt(struct nss_ctx_instance *nss_ctx,
 		if (nss_core_skb_needs_linearize(nbuf, ndev->features) && __skb_linearize(nbuf)) {
 			dev_kfree_skb_any(nbuf);
 			return;
-		}
-
-		/*
-		 * Record RX queue if the netdev has that many RX queues
-		 */
-		if (queue_offset < ndev->real_num_rx_queues) {
-			skb_record_rx_queue(nbuf, queue_offset);
 		}
 
 		cb(ndev, (void *)nbuf, napi);
@@ -774,7 +774,7 @@ static inline void nss_core_handle_ext_buffer_pkt(struct nss_ctx_instance *nss_c
  *	Receive a pbuf from the NSS into Linux.
  */
 static inline void nss_core_rx_pbuf(struct nss_ctx_instance *nss_ctx, struct napi_struct *napi,
-				uint8_t buffer_type, struct sk_buff *nbuf, uint32_t desc_ifnum, uint32_t bit_flags, uint16_t qid)
+				uint8_t buffer_type, struct sk_buff *nbuf, uint32_t desc_ifnum, uint32_t bit_flags)
 {
 	unsigned int interface_num = NSS_INTERFACE_NUM_GET(desc_ifnum);
 	unsigned int core_id = NSS_INTERFACE_NUM_GET_COREID(desc_ifnum);
@@ -817,7 +817,7 @@ static inline void nss_core_rx_pbuf(struct nss_ctx_instance *nss_ctx, struct nap
 		break;
 
 	case N2H_BUFFER_PACKET:
-		nss_core_handle_buffer_pkt(nss_ctx, interface_num, nbuf, napi, bit_flags, qid);
+		nss_core_handle_buffer_pkt(nss_ctx, interface_num, nbuf, napi, bit_flags);
 		break;
 
 	case N2H_BUFFER_PACKET_EXT:
@@ -845,7 +845,7 @@ static inline void nss_core_rx_pbuf(struct nss_ctx_instance *nss_ctx, struct nap
 		 * and count the test packets properly.
 		 */
 		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_RX_STATUS]);
-		status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_H2N_DATA_QUEUE, H2N_BUFFER_RATE_TEST, 0);
+		status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_DATA_QUEUE_0, H2N_BUFFER_RATE_TEST, 0);
 		if (unlikely(status != NSS_CORE_STATUS_SUCCESS)) {
 			dev_kfree_skb_any(nbuf);
 			nss_warning("%p: Unable to enqueue\n", nss_ctx);
@@ -1218,6 +1218,7 @@ static inline void nss_core_handle_empty_buffers(struct nss_ctx_instance *nss_ct
 		 */
 		struct sk_buff *nbuf;
 
+#if (NSS_CACHED_RING == 1)
 		/*
 		 * Invalidate the descriptor before reading it to
 		 * avoid reading stale data.
@@ -1227,6 +1228,7 @@ static inline void nss_core_handle_empty_buffers(struct nss_ctx_instance *nss_ct
 			NSS_CORE_DMA_CACHE_MAINT((void *)next_cache_desc, sizeof(*next_cache_desc), DMA_FROM_DEVICE);
 			prefetch(next_cache_desc);
 		}
+#endif
 
 		nbuf = (struct sk_buff *)desc->opaque;
 
@@ -1252,9 +1254,9 @@ next:
 	}
 
 	n2h_desc_ring->hlos_index = hlos_index;
-	if_map->n2h_hlos_index[NSS_IF_N2H_EMPTY_BUFFER_RETURN_QUEUE] = hlos_index;
+	if_map->n2h_hlos_index[NSS_IF_EMPTY_BUFFER_QUEUE] = hlos_index;
 
-	NSS_CORE_DMA_CACHE_MAINT((void *)&if_map->n2h_hlos_index[NSS_IF_N2H_EMPTY_BUFFER_RETURN_QUEUE], sizeof(uint32_t), DMA_TO_DEVICE);
+	NSS_CORE_DMA_CACHE_MAINT((void *)&if_map->n2h_hlos_index[NSS_IF_EMPTY_BUFFER_QUEUE], sizeof(uint32_t), DMA_TO_DEVICE);
 	NSS_CORE_DSB();
 }
 
@@ -1272,7 +1274,11 @@ static int32_t nss_core_handle_cause_queue(struct int_ctx_instance *int_ctx, uin
 	struct n2h_desc_if_instance *desc_if;
 	struct n2h_descriptor *desc_ring;
 	struct n2h_descriptor *desc;
+
+#if (NSS_CACHED_RING == 1)
 	struct n2h_descriptor *next_cache_desc;
+#endif
+
 	struct nss_ctx_instance *nss_ctx = int_ctx->nss_ctx;
 	struct nss_if_mem_map *if_map = (struct nss_if_mem_map *)nss_ctx->vmap;
 
@@ -1304,6 +1310,7 @@ static int32_t nss_core_handle_cause_queue(struct int_ctx_instance *int_ctx, uin
 
 	desc = &desc_ring[hlos_index];
 
+#if (NSS_CACHED_RING == 1)
 	NSS_CORE_DMA_CACHE_MAINT((void *)desc, sizeof(*desc), DMA_FROM_DEVICE);
 	prefetch(desc);
 
@@ -1312,6 +1319,7 @@ static int32_t nss_core_handle_cause_queue(struct int_ctx_instance *int_ctx, uin
 		NSS_CORE_DMA_CACHE_MAINT((void *)next_cache_desc, sizeof(*next_cache_desc), DMA_FROM_DEVICE);
 		prefetch(next_cache_desc);
 	}
+#endif
 
 	/*
 	 * Restrict ourselves to suggested weight
@@ -1320,7 +1328,7 @@ static int32_t nss_core_handle_cause_queue(struct int_ctx_instance *int_ctx, uin
 		count = weight;
 	}
 
-	if (qid == NSS_IF_N2H_EMPTY_BUFFER_RETURN_QUEUE) {
+	if (qid == NSS_IF_EMPTY_BUFFER_QUEUE) {
 		nss_core_handle_empty_buffers(nss_ctx, if_map, n2h_desc_ring, desc_ring, desc, count, hlos_index, mask);
 		return count;
 	}
@@ -1330,6 +1338,7 @@ static int32_t nss_core_handle_cause_queue(struct int_ctx_instance *int_ctx, uin
 		unsigned int buffer_type;
 		nss_ptr_t opaque;
 
+#if (NSS_CACHED_RING == 1)
 		/*
 		 * Invalidate the descriptor before reading it to
 		 * avoid reading stale data.
@@ -1339,6 +1348,7 @@ static int32_t nss_core_handle_cause_queue(struct int_ctx_instance *int_ctx, uin
 			NSS_CORE_DMA_CACHE_MAINT((void *)next_cache_desc, sizeof(*next_cache_desc), DMA_FROM_DEVICE);
 			prefetch(next_cache_desc);
 		}
+#endif
 
 		buffer_type = desc->buffer_type;
 		opaque = desc->opaque;
@@ -1424,7 +1434,7 @@ static int32_t nss_core_handle_cause_queue(struct int_ctx_instance *int_ctx, uin
 		}
 
 consume:
-		nss_core_rx_pbuf(nss_ctx, &(int_ctx->napi), buffer_type, nbuf, n2h_desc_ring->interface_num, n2h_desc_ring->bit_flags, qid);
+		nss_core_rx_pbuf(nss_ctx, &(int_ctx->napi), buffer_type, nbuf, n2h_desc_ring->interface_num, n2h_desc_ring->bit_flags);
 
 next:
 
@@ -1448,6 +1458,7 @@ next:
  */
 static void nss_core_init_nss(struct nss_ctx_instance *nss_ctx, struct nss_if_mem_map *if_map)
 {
+	int32_t i;
 	struct nss_top_instance *nss_top;
 	int ret;
 
@@ -1461,6 +1472,25 @@ static void nss_core_init_nss(struct nss_ctx_instance *nss_ctx, struct nss_if_me
 	 *	Following checks verify that proper virtual map has been initialized
 	 */
 	nss_assert(if_map->magic == DEV_MAGIC);
+
+	/*
+	 * Copy ring addresses to cacheable locations.
+	 * We do not wish to read ring start address through NC accesses
+	 */
+	for (i = 0; i < if_map->n2h_rings; i++) {
+		struct hlos_n2h_desc_ring *n2h_desc_ring = &nss_ctx->n2h_desc_ring[i];
+		n2h_desc_ring->desc_ring.desc = (struct n2h_descriptor *)(nss_ctx->vmap + if_map->n2h_desc_if[i].desc_addr - nss_ctx->vphys);
+		n2h_desc_ring->desc_ring.size = if_map->n2h_desc_if[i].size;
+		n2h_desc_ring->hlos_index = if_map->n2h_hlos_index[i];
+	}
+
+	for (i = 0; i < if_map->h2n_rings; i++) {
+		struct hlos_h2n_desc_rings *h2n_desc_ring = &nss_ctx->h2n_desc_rings[i];
+		h2n_desc_ring->desc_ring.desc = (struct h2n_descriptor *)(nss_ctx->vmap + if_map->h2n_desc_if[i].desc_addr - nss_ctx->vphys);
+		h2n_desc_ring->desc_ring.size = if_map->h2n_desc_if[i].size;
+		h2n_desc_ring->hlos_index = if_map->h2n_hlos_index[i];
+		spin_lock_init(&h2n_desc_ring->lock);
+	}
 
 	nss_ctx->c2c_start = if_map->c2c_start;
 
@@ -1603,7 +1633,7 @@ static void nss_core_alloc_jumbo_mru_buffers(struct nss_ctx_instance *nss_ctx, s
 {
 
 	struct sk_buff *nbuf;
-	struct hlos_h2n_desc_rings *h2n_desc_ring = &nss_ctx->h2n_desc_rings[NSS_IF_H2N_EMPTY_BUFFER_QUEUE];
+	struct hlos_h2n_desc_rings *h2n_desc_ring = &nss_ctx->h2n_desc_rings[NSS_IF_EMPTY_BUFFER_QUEUE];
 	struct h2n_desc_if_instance *desc_if = &h2n_desc_ring->desc_ring;
 	struct h2n_descriptor *desc_ring = desc_if->desc;
 	struct nss_top_instance *nss_top = nss_ctx->nss_top;
@@ -1660,9 +1690,9 @@ static void nss_core_alloc_jumbo_mru_buffers(struct nss_ctx_instance *nss_ctx, s
 	NSS_CORE_DSB();
 
 	h2n_desc_ring->hlos_index = hlos_index;
-	if_map->h2n_hlos_index[NSS_IF_H2N_EMPTY_BUFFER_QUEUE] = hlos_index;
+	if_map->h2n_hlos_index[NSS_IF_EMPTY_BUFFER_QUEUE] = hlos_index;
 
-	NSS_CORE_DMA_CACHE_MAINT(&if_map->h2n_hlos_index[NSS_IF_H2N_EMPTY_BUFFER_QUEUE], sizeof(uint32_t), DMA_TO_DEVICE);
+	NSS_CORE_DMA_CACHE_MAINT(&if_map->h2n_hlos_index[NSS_IF_EMPTY_BUFFER_QUEUE], sizeof(uint32_t), DMA_TO_DEVICE);
 	NSS_CORE_DSB();
 
 	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_top->stats_drv[NSS_STATS_DRV_TX_EMPTY]);
@@ -1677,7 +1707,7 @@ static void nss_core_alloc_max_avail_size_buffers(struct nss_ctx_instance *nss_c
 {
 	uint16_t payload_len;
 	struct sk_buff *nbuf;
-	struct hlos_h2n_desc_rings *h2n_desc_ring = &nss_ctx->h2n_desc_rings[NSS_IF_H2N_EMPTY_BUFFER_QUEUE];
+	struct hlos_h2n_desc_rings *h2n_desc_ring = &nss_ctx->h2n_desc_rings[NSS_IF_EMPTY_BUFFER_QUEUE];
 	struct h2n_desc_if_instance *desc_if = &h2n_desc_ring->desc_ring;
 	struct h2n_descriptor *desc_ring = desc_if->desc;
 	struct nss_top_instance *nss_top = nss_ctx->nss_top;
@@ -1737,9 +1767,9 @@ static void nss_core_alloc_max_avail_size_buffers(struct nss_ctx_instance *nss_c
 	NSS_CORE_DSB();
 
 	h2n_desc_ring->hlos_index = hlos_index;
-	if_map->h2n_hlos_index[NSS_IF_H2N_EMPTY_BUFFER_QUEUE] = hlos_index;
+	if_map->h2n_hlos_index[NSS_IF_EMPTY_BUFFER_QUEUE] = hlos_index;
 
-	NSS_CORE_DMA_CACHE_MAINT(&if_map->h2n_hlos_index[NSS_IF_H2N_EMPTY_BUFFER_QUEUE], sizeof(uint32_t), DMA_TO_DEVICE);
+	NSS_CORE_DMA_CACHE_MAINT(&if_map->h2n_hlos_index[NSS_IF_EMPTY_BUFFER_QUEUE], sizeof(uint32_t), DMA_TO_DEVICE);
 	NSS_CORE_DSB();
 
 	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_top->stats_drv[NSS_STATS_DRV_TX_EMPTY]);
@@ -1754,7 +1784,7 @@ static inline void nss_core_handle_empty_buffer_sos(struct nss_ctx_instance *nss
 {
 	uint16_t count, size, mask;
 	int32_t nss_index, hlos_index;
-	struct hlos_h2n_desc_rings *h2n_desc_ring = &nss_ctx->h2n_desc_rings[NSS_IF_H2N_EMPTY_BUFFER_QUEUE];
+	struct hlos_h2n_desc_rings *h2n_desc_ring = &nss_ctx->h2n_desc_rings[NSS_IF_EMPTY_BUFFER_QUEUE];
 
 	int paged_mode = nss_core_get_paged_mode();
 	int jumbo_mru = nss_core_get_jumbo_mru();
@@ -1762,9 +1792,9 @@ static inline void nss_core_handle_empty_buffer_sos(struct nss_ctx_instance *nss
 	/*
 	 * Check how many empty buffers could be filled in queue
 	 */
-	NSS_CORE_DMA_CACHE_MAINT(&if_map->h2n_nss_index[NSS_IF_H2N_EMPTY_BUFFER_QUEUE], sizeof(uint32_t), DMA_FROM_DEVICE);
+	NSS_CORE_DMA_CACHE_MAINT(&if_map->h2n_nss_index[NSS_IF_EMPTY_BUFFER_QUEUE], sizeof(uint32_t), DMA_FROM_DEVICE);
 	NSS_CORE_DSB();
-	nss_index = if_map->h2n_nss_index[NSS_IF_H2N_EMPTY_BUFFER_QUEUE];
+	nss_index = if_map->h2n_nss_index[NSS_IF_EMPTY_BUFFER_QUEUE];
 
 	hlos_index = h2n_desc_ring->hlos_index;
 	size = h2n_desc_ring->desc_ring.size;
@@ -1785,7 +1815,7 @@ static inline void nss_core_handle_empty_buffer_sos(struct nss_ctx_instance *nss
 	if (paged_mode) {
 		nss_core_alloc_paged_buffers(nss_ctx, if_map, count, mask, hlos_index,
 					NSS_STATS_DRV_NBUF_ALLOC_FAILS, H2N_BUFFER_EMPTY,
-					NSS_IF_H2N_EMPTY_BUFFER_QUEUE, NSS_STATS_DRV_TX_EMPTY);
+					NSS_IF_EMPTY_BUFFER_QUEUE, NSS_STATS_DRV_TX_EMPTY);
 	} else if (jumbo_mru) {
 		nss_core_alloc_jumbo_mru_buffers(nss_ctx, if_map, jumbo_mru, count,
 					mask, hlos_index);
@@ -1809,14 +1839,14 @@ static inline void nss_core_handle_paged_empty_buffer_sos(struct nss_ctx_instanc
 {
 	uint16_t count, size, mask;
 	int32_t nss_index, hlos_index;
-	struct hlos_h2n_desc_rings *h2n_desc_ring = &nss_ctx->h2n_desc_rings[NSS_IF_H2N_EMPTY_PAGED_BUFFER_QUEUE];
+	struct hlos_h2n_desc_rings *h2n_desc_ring = &nss_ctx->h2n_desc_rings[NSS_IF_EMPTY_PAGED_BUFFER_QUEUE];
 
 	/*
 	 * Check how many empty buffers could be filled in queue
 	 */
-	NSS_CORE_DMA_CACHE_MAINT((void *)&if_map->h2n_nss_index[NSS_IF_H2N_EMPTY_PAGED_BUFFER_QUEUE], sizeof(uint32_t), DMA_FROM_DEVICE);
+	NSS_CORE_DMA_CACHE_MAINT((void *)&if_map->h2n_nss_index[NSS_IF_EMPTY_PAGED_BUFFER_QUEUE], sizeof(uint32_t), DMA_FROM_DEVICE);
 	NSS_CORE_DSB();
-	nss_index = if_map->h2n_nss_index[NSS_IF_H2N_EMPTY_PAGED_BUFFER_QUEUE];
+	nss_index = if_map->h2n_nss_index[NSS_IF_EMPTY_PAGED_BUFFER_QUEUE];
 
 	hlos_index = h2n_desc_ring->hlos_index;
 	size = h2n_desc_ring->desc_ring.size;
@@ -1835,7 +1865,7 @@ static inline void nss_core_handle_paged_empty_buffer_sos(struct nss_ctx_instanc
 
 	nss_core_alloc_paged_buffers(nss_ctx, if_map, count, mask, hlos_index,
 			NSS_STATS_DRV_PAGED_BUF_ALLOC_FAILS, H2N_PAGED_BUFFER_EMPTY,
-			NSS_IF_H2N_EMPTY_PAGED_BUFFER_QUEUE, NSS_STATS_DRV_PAGED_TX_EMPTY);
+			NSS_IF_EMPTY_PAGED_BUFFER_QUEUE, NSS_STATS_DRV_PAGED_TX_EMPTY);
 
 	/*
 	 * Inform NSS that new buffers are available
@@ -1864,7 +1894,7 @@ static inline void nss_core_handle_tx_unblocked(struct nss_ctx_instance *nss_ctx
 	}
 
 	spin_unlock_bh(&nss_ctx->decongest_cb_lock);
-	nss_ctx->h2n_desc_rings[NSS_IF_H2N_DATA_QUEUE].flags &= ~NSS_H2N_DESC_RING_FLAGS_TX_STOPPED;
+	nss_ctx->h2n_desc_rings[NSS_IF_DATA_QUEUE_0].flags &= ~NSS_H2N_DESC_RING_FLAGS_TX_STOPPED;
 
 	/*
 	 * Mask Tx unblocked interrupt and unmask it again when queue full condition is reached
@@ -2219,12 +2249,12 @@ static inline uint32_t nss_core_dma_map_single(struct device *dev, struct sk_buf
 	return (uint32_t)dma_map_single(dev, skb->head, nss_core_skb_tail_offset(skb), DMA_TO_DEVICE);
 }
 
-#if (NSS_SKB_REUSE_SUPPORT == 1)
+#if (NSS_SKB_RECYCLE_SUPPORT == 1)
 /*
- * nss_skb_can_reuse
- *	check if skb can be reuse
+ * nss_skb_can_recycle
+ *	check if skb can be recyled
  */
-static inline bool nss_skb_can_reuse(struct nss_ctx_instance *nss_ctx,
+static inline bool nss_skb_can_recycle(struct nss_ctx_instance *nss_ctx,
 	uint32_t if_num, struct sk_buff *nbuf, int min_skb_size)
 {
 	/*
@@ -2242,9 +2272,11 @@ static inline bool nss_skb_can_reuse(struct nss_ctx_instance *nss_ctx,
 	}
 
 	/*
-	 * Check if skb has more than single user.
+	 * check skb user count
 	 */
-	if (unlikely(skb_shared(nbuf))) {
+	if (likely(atomic_read(&nbuf->users) == 1)) {
+		smp_rmb();
+	} else if (likely(!atomic_dec_and_test(&nbuf->users))) {
 		return false;
 	}
 
@@ -2268,12 +2300,14 @@ static inline bool nss_skb_can_reuse(struct nss_ctx_instance *nss_ctx,
 	}
 #endif
 
+#ifdef CONFIG_XFRM
 	/*
 	 * If skb has security parameters set do not reuse
 	 */
-	if (unlikely(skb_sec_path(nbuf))) {
+	if (unlikely(nbuf->sp)) {
 		return false;
 	}
+#endif
 
 	if (unlikely(irqs_disabled()))
 		return false;
@@ -2284,7 +2318,7 @@ static inline bool nss_skb_can_reuse(struct nss_ctx_instance *nss_ctx,
 	if (unlikely(skb_is_nonlinear(nbuf)))
 		return false;
 
-	if (unlikely(skb_has_frag_list(nbuf)))
+	if (unlikely(skb_shinfo(nbuf)->frag_list))
 		return false;
 
 	if (unlikely(skb_shinfo(nbuf)->nr_frags))
@@ -2309,13 +2343,13 @@ static inline bool nss_skb_can_reuse(struct nss_ctx_instance *nss_ctx,
 }
 
 /*
- * nss_skb_reuse - clean up an skb
- *	Clears the skb to be reused as a receive buffer.
+ * nss_skb_recycle - clean up an skb for reuse
+ *	Recycles the skb to be reused as a receive buffer.
  *
  * NOTE: This function does any necessary reference count dropping, and
  * cleans up the skbuff as if its allocated fresh.
  */
-void nss_skb_reuse(struct sk_buff *nbuf)
+void nss_skb_recycle(struct sk_buff *nbuf)
 {
 	struct skb_shared_info *shinfo;
 
@@ -2357,7 +2391,7 @@ static inline int32_t nss_core_send_buffer_simple_skb(struct nss_ctx_instance *n
 	uint16_t mask;
 	uint32_t frag0phyaddr;
 
-#if (NSS_SKB_REUSE_SUPPORT == 1)
+#if (NSS_SKB_RECYCLE_SUPPORT == 1)
 	uint16_t sz;
 #endif
 
@@ -2371,11 +2405,11 @@ static inline int32_t nss_core_send_buffer_simple_skb(struct nss_ctx_instance *n
 	mask = desc_if->size - 1;
 	desc = &desc_ring[hlos_index];
 
-#if (NSS_SKB_REUSE_SUPPORT == 1)
+#if (NSS_SKB_RECYCLE_SUPPORT == 1)
 	/*
-	 * Check if the skb is reuseable without resetting its fields.
+	 * Check if the skb is recyclable without resetting its fields.
 	 */
-	if (unlikely(!nss_skb_can_reuse(nss_ctx, if_num, nbuf, nss_ctx->max_buf_size))) {
+	if (unlikely(!nss_skb_can_recycle(nss_ctx, if_num, nbuf, nss_ctx->max_buf_size))) {
 		goto no_reuse;
 	}
 
@@ -2400,9 +2434,9 @@ static inline int32_t nss_core_send_buffer_simple_skb(struct nss_ctx_instance *n
 	NSS_CORE_DMA_CACHE_MAINT((void *)desc, sizeof(*desc), DMA_TO_DEVICE);
 
 	/*
-	 * We are done using the skb fields and can reuse it now
+	 * We are done using the skb fields and can recycle it now
 	 */
-	nss_skb_reuse(nbuf);
+	nss_skb_recycle(nbuf);
 
 	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_BUFFER_REUSE]);
 	return 1;
@@ -2794,93 +2828,4 @@ int32_t nss_core_send_buffer(struct nss_ctx_instance *nss_ctx, uint32_t if_num,
 
 	spin_unlock_bh(&h2n_desc_ring->lock);
 	return NSS_CORE_STATUS_SUCCESS;
-}
-
-/*
- * nss_core_send_cmd()
- *	Send command message to NSS
- */
-int32_t nss_core_send_cmd(struct nss_ctx_instance *nss_ctx, void *msg, int size, int buf_size)
-{
-	struct nss_cmn_msg *ncm = (struct nss_cmn_msg *)msg;
-	int32_t status;
-	struct sk_buff *nbuf;
-
-	NSS_VERIFY_CTX_MAGIC(nss_ctx);
-	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
-		nss_warning("%p: interface: %d type: %d message dropped as core not ready\n", nss_ctx, ncm->interface, ncm->type);
-		return NSS_TX_FAILURE_NOT_READY;
-	}
-
-	if (nss_cmn_get_msg_len(ncm) > size) {
-		nss_warning("%p: interface: %d type: %d message length %d is invalid, size = %d\n",
-					nss_ctx, ncm->interface, ncm->type, nss_cmn_get_msg_len(ncm), size);
-		return NSS_TX_FAILURE_TOO_LARGE;
-	}
-
-	if (buf_size > PAGE_SIZE) {
-		nss_warning("%p: interface: %d type: %d tx request size too large: %u",
-					nss_ctx, ncm->interface, ncm->type, buf_size);
-		return NSS_TX_FAILURE_BAD_PARAM;
-	}
-
-	nbuf = dev_alloc_skb(buf_size);
-	if (unlikely(!nbuf)) {
-		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
-		nss_warning("%p: interface: %d type: %d msg dropped as command allocation failed", nss_ctx, ncm->interface, ncm->type);
-		return NSS_TX_FAILURE;
-	}
-
-	memcpy(skb_put(nbuf, buf_size), (void *)ncm, size);
-
-	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_H2N_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
-	if (status != NSS_CORE_STATUS_SUCCESS) {
-		dev_kfree_skb_any(nbuf);
-		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_QUEUE_FULL]);
-		nss_warning("%p: interface: %d type: %d unable to enqueue message status %d\n", nss_ctx, ncm->interface, ncm->type, status);
-		return status;
-	}
-
-	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
-	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_REQ]);
-	return status;
-}
-
-/*
- * nss_core_send_packet()
- *	Send data packet to NSS
- */
-int32_t nss_core_send_packet(struct nss_ctx_instance *nss_ctx, struct sk_buff *nbuf, uint32_t if_num, uint32_t flag)
-{
-	int32_t status;
-	int32_t queue_id = 0;
-
-	NSS_VERIFY_CTX_MAGIC(nss_ctx);
-	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
-		nss_warning("%p: interface: %d packet dropped as core not ready\n", nss_ctx, if_num);
-		return NSS_TX_FAILURE_NOT_READY;
-	}
-
-#ifdef NSS_MULTI_H2N_DATA_RING_SUPPORT
-	queue_id = (skb_get_queue_mapping(nbuf) & (NSS_HOST_CORES - 1)) << 1;
-	if (nbuf->priority & 0x7) {
-		queue_id++;
-	}
-#endif
-	status = nss_core_send_buffer(nss_ctx, if_num, nbuf, NSS_IF_H2N_DATA_QUEUE + queue_id, H2N_BUFFER_PACKET, flag);
-	if (status != NSS_CORE_STATUS_SUCCESS) {
-		nss_warning("%p: interface: %d unable to enqueue packet status %d\n", nss_ctx, if_num, status);
-		return status;
-	}
-
-	nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_DATA_COMMAND_QUEUE);
-
-#ifdef NSS_MULTI_H2N_DATA_RING_SUPPORT
-	/*
-	 * Count per queue and aggregate packet count
-	 */
-	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_PACKET_QUEUE_0 + queue_id]);
-#endif
-	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_PACKET]);
-	return status;
 }
