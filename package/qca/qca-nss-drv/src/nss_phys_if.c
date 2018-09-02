@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -20,8 +20,16 @@
  */
 
 #include "nss_tx_rx_common.h"
+#include "nss_tstamp.h"
 
 #define NSS_PHYS_IF_TX_TIMEOUT 3000 /* 3 Seconds */
+
+/*
+ * NSS phys_if modes
+ */
+#define NSS_PHYS_IF_MODE0	0	/* phys_if mode 0 */
+#define NSS_PHYS_IF_MODE1	1	/* phys_if mode 1 */
+#define NSS_PHYS_IF_MODE2	2	/* phys_if mode 2 */
 
 /*
  * Private data structure for phys_if interface
@@ -33,87 +41,6 @@ static struct nss_phys_if_pvt {
 } phif;
 
 static int nss_phys_if_sem_init_done;
-
-/*
- * nss_phys_if_gmac_stats_sync()
- *	Handle the syncing of GMAC stats.
- */
-void nss_phys_if_gmac_stats_sync(struct nss_ctx_instance *nss_ctx,
-		struct nss_phys_if_stats *stats, uint16_t interface)
-{
-	void *ctx;
-	struct nss_gmac_stats gmac_stats;
-	uint32_t id = interface;
-
-	/*
-	 * Since the new extended statistics are not the same as the older stats
-	 * parameter, we must do a field by field copy.
-	 */
-	gmac_stats.interface = interface;
-	gmac_stats.rx_bytes = stats->if_stats.rx_bytes;
-	gmac_stats.rx_packets = stats->if_stats.rx_packets;
-	gmac_stats.rx_errors = stats->estats.rx_errors;
-	gmac_stats.rx_receive_errors = stats->estats.rx_receive_errors;
-	gmac_stats.rx_overflow_errors = stats->estats.rx_overflow_errors;
-	gmac_stats.rx_descriptor_errors = stats->estats.rx_descriptor_errors;
-	gmac_stats.rx_watchdog_timeout_errors = stats->estats.rx_watchdog_timeout_errors;
-	gmac_stats.rx_crc_errors = stats->estats.rx_crc_errors;
-	gmac_stats.rx_late_collision_errors = stats->estats.rx_late_collision_errors;
-	gmac_stats.rx_dribble_bit_errors = stats->estats.rx_dribble_bit_errors;
-	gmac_stats.rx_length_errors = stats->estats.rx_length_errors;
-	gmac_stats.rx_ip_header_errors = stats->estats.rx_ip_header_errors;
-	gmac_stats.rx_ip_payload_errors = stats->estats.rx_ip_payload_errors;
-	gmac_stats.rx_no_buffer_errors = stats->estats.rx_no_buffer_errors;
-	gmac_stats.rx_transport_csum_bypassed = stats->estats.rx_transport_csum_bypassed;
-	gmac_stats.tx_bytes = stats->if_stats.tx_bytes;
-	gmac_stats.tx_packets = stats->if_stats.tx_packets;
-	gmac_stats.tx_collisions = stats->estats.tx_collisions;
-	gmac_stats.tx_errors = stats->estats.tx_errors;
-	gmac_stats.tx_jabber_timeout_errors = stats->estats.tx_jabber_timeout_errors;
-	gmac_stats.tx_frame_flushed_errors = stats->estats.tx_frame_flushed_errors;
-	gmac_stats.tx_loss_of_carrier_errors = stats->estats.tx_loss_of_carrier_errors;
-	gmac_stats.tx_no_carrier_errors = stats->estats.tx_no_carrier_errors;
-	gmac_stats.tx_late_collision_errors = stats->estats.tx_late_collision_errors;
-	gmac_stats.tx_excessive_collision_errors = stats->estats.tx_excessive_collision_errors;
-	gmac_stats.tx_excessive_deferral_errors = stats->estats.tx_excessive_deferral_errors;
-	gmac_stats.tx_underflow_errors = stats->estats.tx_underflow_errors;
-	gmac_stats.tx_ip_header_errors = stats->estats.tx_ip_header_errors;
-	gmac_stats.tx_ip_payload_errors = stats->estats.tx_ip_payload_errors;
-	gmac_stats.tx_dropped = stats->estats.tx_dropped;
-	gmac_stats.hw_errs[0] = stats->estats.hw_errs[0];
-	gmac_stats.hw_errs[1] = stats->estats.hw_errs[1];
-	gmac_stats.hw_errs[2] = stats->estats.hw_errs[2];
-	gmac_stats.hw_errs[3] = stats->estats.hw_errs[3];
-	gmac_stats.hw_errs[4] = stats->estats.hw_errs[4];
-	gmac_stats.hw_errs[5] = stats->estats.hw_errs[5];
-	gmac_stats.hw_errs[6] = stats->estats.hw_errs[6];
-	gmac_stats.hw_errs[7] = stats->estats.hw_errs[7];
-	gmac_stats.hw_errs[8] = stats->estats.hw_errs[8];
-	gmac_stats.hw_errs[9] = stats->estats.hw_errs[9];
-	gmac_stats.rx_missed = stats->estats.rx_missed;
-	gmac_stats.fifo_overflows = stats->estats.fifo_overflows;
-	gmac_stats.rx_scatter_errors = stats->estats.rx_scatter_errors;
-	gmac_stats.tx_ts_create_errors = stats->estats.tx_ts_create_errors;
-	gmac_stats.gmac_total_ticks = stats->estats.gmac_total_ticks;
-	gmac_stats.gmac_worst_case_ticks = stats->estats.gmac_worst_case_ticks;
-	gmac_stats.gmac_iterations = stats->estats.gmac_iterations;
-	gmac_stats.tx_pause_frames = stats->estats.tx_pause_frames;
-
-	/*
-	 * Get the netdev ctx
-	 */
-	ctx = nss_ctx->subsys_dp_register[id].ndev;
-
-	/*
-	 * Pass through gmac exported api
-	 */
-	if (!ctx) {
-		nss_warning("%p: Event received for GMAC interface %d before registration", nss_ctx, interface);
-		return;
-	}
-
-	nss_gmac_event_receive(ctx, NSS_GMAC_EVENT_STATS, (void *)&gmac_stats, sizeof(struct nss_gmac_stats));
-}
 
 /*
  * nss_phys_if_update_driver_stats()
@@ -182,7 +109,7 @@ static void nss_phys_if_msg_handler(struct nss_ctx_instance *nss_ctx, struct nss
 		 * To create the old API gmac statistics, we use the new extended GMAC stats.
 		 */
 		nss_phys_if_update_driver_stats(nss_ctx, ncm->interface, &nim->msg.stats);
-		nss_phys_if_gmac_stats_sync(nss_ctx, &nim->msg.stats, ncm->interface);
+		nss_top_main.data_plane_ops->data_plane_stats_sync(&nim->msg.stats, ncm->interface);
 		break;
 	}
 
@@ -190,9 +117,9 @@ static void nss_phys_if_msg_handler(struct nss_ctx_instance *nss_ctx, struct nss
 	 * Update the callback and app_data for NOTIFY messages, IPv4 sends all notify messages
 	 * to the same callback/app_data.
 	 */
-	if (ncm->response == NSS_CMM_RESPONSE_NOTIFY) {
-		ncm->cb = (uint32_t)nss_ctx->nss_top->phys_if_msg_callback[ncm->interface];
-		ncm->app_data = (uint32_t)nss_ctx->subsys_dp_register[ncm->interface].ndev;
+	if (ncm->response == NSS_CMN_RESPONSE_NOTIFY) {
+		ncm->cb = (nss_ptr_t)nss_ctx->nss_top->phys_if_msg_callback[ncm->interface];
+		ncm->app_data = (nss_ptr_t)nss_ctx->subsys_dp_register[ncm->interface].ndev;
 	}
 
 	/*
@@ -227,88 +154,25 @@ static void nss_phys_if_callback(void *app_data, struct nss_phys_if_msg *nim)
 }
 
 /*
- * nss_phys_if_get_mtu_sz
- *	Get the mtu size needed based on current max mtu value
- */
-static uint16_t nss_phys_if_get_mtu_sz(struct nss_ctx_instance *nss_ctx)
-{
-	int32_t i;
-	uint16_t mtu_sz = NSS_GMAC_NORMAL_FRAME_MTU;
-	uint16_t max_mtu;
-
-	/*
-	 * Loop through MTU values of all Physical
-	 * interfaces and get the maximum one of all
-	 */
-	max_mtu = nss_ctx->phys_if_mtu[0];
-	for (i = 1; i < NSS_MAX_PHYSICAL_INTERFACES; i++) {
-		if (max_mtu < nss_ctx->phys_if_mtu[i]) {
-			max_mtu = nss_ctx->phys_if_mtu[i];
-		}
-	}
-
-	/*
-	 * GMACs support 3 Modes
-	 * Normal Mode Payloads upto 1522 Bytes ( 1500 + 14 + 4(Vlan) + 4(CRC))
-	 * Mini Jumbo Mode Payloads upto 2000 Bytes (1978 + 14 + 4(Vlan) + 4 (CRC))
-	 * Full Jumbo Mode payloads upto 9622 Bytes (9600 + 14 + 4(Vlan) + 4 (CRC))
-	 */
-
-	/*
-	 * The configured MTU value on a physical interface shall fall
-	 * into one of these cases. Finding the Needed MTU size that is required
-	 * for GMAC to successfully receive the frame.
-	 */
-	if (max_mtu <= NSS_GMAC_NORMAL_FRAME_MTU) {
-		mtu_sz = NSS_GMAC_NORMAL_FRAME_MTU;
-	} else if (max_mtu <= NSS_GMAC_MINI_JUMBO_FRAME_MTU) {
-		mtu_sz = NSS_GMAC_MINI_JUMBO_FRAME_MTU;
-	} else if (max_mtu <= NSS_GMAC_FULL_JUMBO_FRAME_MTU) {
-		mtu_sz = NSS_GMAC_FULL_JUMBO_FRAME_MTU;
-	}
-	return mtu_sz;
-}
-
-/*
  * nss_phys_if_buf()
  *	Send packet to physical interface owned by NSS
  */
 nss_tx_status_t nss_phys_if_buf(struct nss_ctx_instance *nss_ctx, struct sk_buff *os_buf, uint32_t if_num)
 {
-	int32_t status;
-	uint16_t flags = 0;
-
 	nss_trace("%p: Phys If Tx packet, id:%d, data=%p", nss_ctx, if_num, os_buf->data);
 
-	NSS_VERIFY_CTX_MAGIC(nss_ctx);
-	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
-		nss_warning("%p: 'Phys If Tx' packet dropped as core not ready", nss_ctx);
-		return NSS_TX_FAILURE_NOT_READY;
-	}
-
-	/* Check if we need the packet to be timestamped by GMAC Hardware at Tx */
-	if (unlikely(skb_shinfo(os_buf)->tx_flags & SKBTX_HW_TSTAMP)) {
-		flags |= H2N_BIT_FLAG_TX_TS_REQUIRED;
-	}
-
-	status = nss_core_send_buffer(nss_ctx, if_num, os_buf, NSS_IF_DATA_QUEUE_0, H2N_BUFFER_PACKET, flags);
-	if (unlikely(status != NSS_CORE_STATUS_SUCCESS)) {
-		nss_warning("%p: Unable to enqueue 'Phys If Tx' packet\n", nss_ctx);
-		if (status == NSS_CORE_STATUS_FAILURE_QUEUE) {
-			return NSS_TX_FAILURE_QUEUE;
-		}
-
-		return NSS_TX_FAILURE;
-	}
-
 	/*
-	 * Kick the NSS awake so it can process our new entry.
+	 * If we need the packet to be timestamped by GMAC Hardware at Tx
+	 * send the packet to tstamp NSS module
 	 */
-	nss_hal_send_interrupt(nss_ctx->nmap, nss_ctx->h2n_desc_rings[NSS_IF_DATA_QUEUE_0].desc_ring.int_bit,
-									NSS_REGS_H2N_INTR_STATUS_DATA_COMMAND_QUEUE);
+	if (unlikely(skb_shinfo(os_buf)->tx_flags & SKBTX_HW_TSTAMP)) {
+		/* try PHY Driver hook for transmit timestamping firstly */
+		skb_tx_timestamp(os_buf);
+		if (!(skb_shinfo(os_buf)->tx_flags & SKBTX_IN_PROGRESS))
+			return nss_tstamp_tx_buf(nss_ctx, os_buf, if_num);
+	}
 
-	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_PACKET]);
-	return NSS_TX_SUCCESS;
+	return nss_core_send_packet(nss_ctx, os_buf, if_num, 0);
 }
 
 /*
@@ -317,16 +181,9 @@ nss_tx_status_t nss_phys_if_buf(struct nss_ctx_instance *nss_ctx, struct sk_buff
 nss_tx_status_t nss_phys_if_msg(struct nss_ctx_instance *nss_ctx, struct nss_phys_if_msg *nim)
 {
 	struct nss_cmn_msg *ncm = &nim->cm;
-	struct nss_phys_if_msg *nim2;
 	struct net_device *dev;
-	struct sk_buff *nbuf;
-	uint32_t if_num;
-	int32_t status;
 
-	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
-		nss_warning("Interface could not be created as core not ready");
-		return NSS_TX_FAILURE;
-	}
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
 
 	/*
 	 * Sanity check the message
@@ -341,39 +198,13 @@ nss_tx_status_t nss_phys_if_msg(struct nss_ctx_instance *nss_ctx, struct nss_phy
 		return NSS_TX_FAILURE;
 	}
 
-	if (nss_cmn_get_msg_len(ncm) > sizeof(struct nss_phys_if_msg)) {
-		nss_warning("%p: invalid length: %d", nss_ctx, nss_cmn_get_msg_len(ncm));
-		return NSS_TX_FAILURE;
-	}
-
-	if_num = ncm->interface;
-	dev = nss_ctx->subsys_dp_register[if_num].ndev;
+	dev = nss_ctx->subsys_dp_register[ncm->interface].ndev;
 	if (!dev) {
-		nss_warning("%p: Unregister physical interface %d: no context", nss_ctx, if_num);
+		nss_warning("%p: Unregister physical interface %d: no context", nss_ctx, ncm->interface);
 		return NSS_TX_FAILURE_BAD_PARAM;
 	}
 
-	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
-	if (unlikely(!nbuf)) {
-		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
-		nss_warning("%p: physical interface %p: command allocation failed", nss_ctx, dev);
-		return NSS_TX_FAILURE;
-	}
-
-	nim2 = (struct nss_phys_if_msg *)skb_put(nbuf, sizeof(struct nss_phys_if_msg));
-	memcpy(nim2, nim, sizeof(struct nss_phys_if_msg));
-
-	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
-	if (status != NSS_CORE_STATUS_SUCCESS) {
-		dev_kfree_skb_any(nbuf);
-		nss_warning("%p: Unable to enqueue 'physical interface' command\n", nss_ctx);
-		return NSS_TX_FAILURE;
-	}
-
-	nss_hal_send_interrupt(nss_ctx->nmap, nss_ctx->h2n_desc_rings[NSS_IF_CMD_QUEUE].desc_ring.int_bit,
-		NSS_REGS_H2N_INTR_STATUS_DATA_COMMAND_QUEUE);
-
-	return NSS_TX_SUCCESS;
+	return nss_core_send_cmd(nss_ctx, nim, sizeof(*nim), NSS_NBUF_PAYLOAD_SIZE);
 }
 
 /*
@@ -430,14 +261,11 @@ struct nss_ctx_instance *nss_phys_if_register(uint32_t if_num,
 	nss_assert(nss_ctx);
 	nss_assert(if_num <= NSS_MAX_PHYSICAL_INTERFACES);
 
-	nss_ctx->subsys_dp_register[if_num].ndev = netdev;
-	nss_ctx->subsys_dp_register[if_num].cb = rx_callback;
-	nss_ctx->subsys_dp_register[if_num].app_data = NULL;
-	nss_ctx->subsys_dp_register[if_num].features = features;
+	nss_core_register_subsys_dp(nss_ctx, if_num, rx_callback, NULL, NULL, netdev, features);
 
 	nss_top_main.phys_if_msg_callback[if_num] = msg_callback;
 
-	nss_ctx->phys_if_mtu[if_num] = NSS_GMAC_NORMAL_FRAME_MTU;
+	nss_ctx->phys_if_mtu[if_num] = ETH_DATA_LEN;
 	return nss_ctx;
 }
 
@@ -452,10 +280,7 @@ void nss_phys_if_unregister(uint32_t if_num)
 	nss_assert(nss_ctx);
 	nss_assert(if_num < NSS_MAX_PHYSICAL_INTERFACES);
 
-	nss_ctx->subsys_dp_register[if_num].ndev = NULL;
-	nss_ctx->subsys_dp_register[if_num].cb = NULL;
-	nss_ctx->subsys_dp_register[if_num].app_data = NULL;
-	nss_ctx->subsys_dp_register[if_num].features = 0;
+	nss_core_unregister_subsys_dp(nss_ctx, if_num);
 
 	nss_top_main.phys_if_msg_callback[if_num] = NULL;
 
@@ -466,11 +291,11 @@ void nss_phys_if_unregister(uint32_t if_num)
 /*
  * nss_phys_if_register_handler()
  */
-void nss_phys_if_register_handler(uint32_t if_num)
+void nss_phys_if_register_handler(struct nss_ctx_instance *nss_ctx, uint32_t if_num)
 {
 	uint32_t ret;
 
-	ret = nss_core_register_handler(if_num, nss_phys_if_msg_handler, NULL);
+	ret = nss_core_register_handler(nss_ctx, if_num, nss_phys_if_msg_handler, NULL);
 
 	if (ret != NSS_CORE_STATUS_SUCCESS) {
 		nss_warning("Message handler FAILED to be registered for interface %d", if_num);
@@ -503,18 +328,18 @@ nss_tx_status_t nss_phys_if_open(struct nss_ctx_instance *nss_ctx, uint32_t tx_d
 	nio->tx_desc_ring = tx_desc_ring;
 	nio->rx_desc_ring = rx_desc_ring;
 
-	if (mode == NSS_GMAC_MODE0) {
+	if (mode == NSS_PHYS_IF_MODE0) {
 		nio->rx_forward_if = NSS_ETH_RX_INTERFACE;
 		nio->alignment_mode = NSS_IF_DATA_ALIGN_2BYTE;
-	} else if(mode == NSS_GMAC_MODE1) {
+	} else if (mode == NSS_PHYS_IF_MODE1) {
 		nio->rx_forward_if = NSS_SJACK_INTERFACE;
 		nio->alignment_mode = NSS_IF_DATA_ALIGN_4BYTE;
-	} else if(mode == NSS_GMAC_MODE2) {
+	} else if (mode == NSS_PHYS_IF_MODE2) {
 		nio->rx_forward_if = NSS_PORTID_INTERFACE;
 		nio->alignment_mode = NSS_IF_DATA_ALIGN_2BYTE;
 	} else {
 		nss_info("%p: Phys If Open, unknown mode %d\n", nss_ctx, mode);
-		return NSS_GMAC_FAILURE;
+		return NSS_TX_FAILURE;
 	}
 
 	/*
@@ -595,22 +420,18 @@ nss_tx_status_t nss_phys_if_change_mtu(struct nss_ctx_instance *nss_ctx, uint32_
 {
 	struct nss_phys_if_msg nim;
 	struct nss_if_mtu_change *nimc;
-	uint16_t mtu_sz;
+	uint16_t mtu_sz, max_mtu;
+	int i;
 	nss_tx_status_t status;
 
 	NSS_VERIFY_CTX_MAGIC(nss_ctx);
 	nss_info("%p: Phys If Change MTU, id:%d, mtu=%d\n", nss_ctx, if_num, mtu);
 
-	if (mtu > NSS_GMAC_FULL_JUMBO_FRAME_MTU) {
-		nss_info("%p: MTU larger than FULL_JUMBO_FRAME(%d)", nss_ctx, NSS_GMAC_FULL_JUMBO_FRAME_MTU);
-		return NSS_TX_FAILURE;
-	}
-
 	nss_cmn_msg_init(&nim.cm, if_num, NSS_PHYS_IF_MTU_CHANGE,
 			sizeof(struct nss_if_mtu_change), nss_phys_if_callback, NULL);
 
 	nimc = &nim.msg.if_msg.mtu_change;
-	nimc->min_buf_size = (uint16_t)mtu + NSS_NBUF_ETH_EXTRA;
+	nimc->min_buf_size = mtu;
 
 	status = nss_phys_if_msg_sync(nss_ctx, &nim);
 	if (status != NSS_TX_SUCCESS) {
@@ -622,9 +443,19 @@ nss_tx_status_t nss_phys_if_change_mtu(struct nss_ctx_instance *nss_ctx, uint32_
 	 */
 	nss_ctx->phys_if_mtu[if_num] = (uint16_t)mtu;
 
-	mtu_sz = nss_phys_if_get_mtu_sz(nss_ctx);
+	/*
+	 * Loop through MTU values of all Physical
+	 * interfaces and get the maximum one of all
+	 */
+	max_mtu = nss_ctx->phys_if_mtu[0];
+	for (i = 1; i < NSS_MAX_PHYSICAL_INTERFACES; i++) {
+		if (max_mtu < nss_ctx->phys_if_mtu[i]) {
+			max_mtu = nss_ctx->phys_if_mtu[i];
+		}
+	}
 
-	nss_ctx->max_buf_size = ((mtu_sz + ETH_HLEN + SMP_CACHE_BYTES - 1) & ~(SMP_CACHE_BYTES - 1)) + NSS_NBUF_PAD_EXTRA;
+	mtu_sz = nss_top_main.data_plane_ops->data_plane_get_mtu_sz(max_mtu);
+	nss_ctx->max_buf_size = ((mtu_sz + ETH_HLEN + SMP_CACHE_BYTES - 1) & ~(SMP_CACHE_BYTES - 1)) + NSS_NBUF_ETH_EXTRA + NSS_NBUF_PAD_EXTRA;
 
 	/*
 	 * max_buf_size should not be lesser than NSS_NBUF_PAYLOAD_SIZE
@@ -649,6 +480,46 @@ nss_tx_status_t nss_phys_if_change_mtu(struct nss_ctx_instance *nss_ctx, uint32_
 	nss_ctx->nss_top->prev_mtu_sz = mtu_sz;
 
 	return status;
+}
+
+/*
+ * nss_phys_if_vsi_assign()
+ *	Send a vsi assign to physical interface
+ */
+nss_tx_status_t nss_phys_if_vsi_assign(struct nss_ctx_instance *nss_ctx, uint32_t vsi, uint32_t if_num)
+{
+	struct nss_phys_if_msg nim;
+
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	nss_info("%p: Phys If VSI Assign, id:%d\n", nss_ctx, if_num);
+
+	memset(&nim, 0, sizeof(struct nss_phys_if_msg));
+
+	nss_cmn_msg_init(&nim.cm, if_num, NSS_PHYS_IF_VSI_ASSIGN,
+			sizeof(struct nss_if_vsi_assign), nss_phys_if_callback, NULL);
+
+	nim.msg.if_msg.vsi_assign.vsi = vsi;
+	return nss_phys_if_msg_sync(nss_ctx, &nim);
+}
+
+/*
+ * nss_phys_if_vsi_unassign()
+ *	Send a vsi unassign to physical interface
+ */
+nss_tx_status_t nss_phys_if_vsi_unassign(struct nss_ctx_instance *nss_ctx, uint32_t vsi, uint32_t if_num)
+{
+	struct nss_phys_if_msg nim;
+
+	NSS_VERIFY_CTX_MAGIC(nss_ctx);
+	nss_info("%p: Phys If VSI Unassign, id:%d\n", nss_ctx, if_num);
+
+	memset(&nim, 0, sizeof(struct nss_phys_if_msg));
+
+	nss_cmn_msg_init(&nim.cm, if_num, NSS_PHYS_IF_VSI_UNASSIGN,
+			sizeof(struct nss_if_vsi_unassign), nss_phys_if_callback, NULL);
+
+	nim.msg.if_msg.vsi_unassign.vsi = vsi;
+	return nss_phys_if_msg_sync(nss_ctx, &nim);
 }
 
 /*

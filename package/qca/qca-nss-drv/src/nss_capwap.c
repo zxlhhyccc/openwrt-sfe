@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -15,13 +15,14 @@
  */
 
  /*
-  * nss_capwap.h
+  * nss_capwap.c
   *	NSS CAPWAP driver interface APIs
   */
 #include "nss_core.h"
 #include "nss_capwap.h"
 #include "nss_cmn.h"
 #include "nss_tx_rx_common.h"
+#include "nss_capwap_stats.h"
 
 /*
  * Spinlock for protecting tunnel operations colliding with a tunnel destroy
@@ -55,7 +56,7 @@ static bool nss_capwap_verify_if_num(uint32_t if_num)
 		return false;
 	}
 
-	if (nss_dynamic_interface_get_type(if_num) != NSS_DYNAMIC_INTERFACE_TYPE_CAPWAP) {
+	if (nss_dynamic_interface_get_type(nss_capwap_get_ctx(), if_num) != NSS_DYNAMIC_INTERFACE_TYPE_CAPWAP) {
 		return false;
 	}
 
@@ -167,7 +168,7 @@ static void nss_capwapmgr_update_stats(struct nss_capwap_handle *handle, struct 
 	 */
 	stats->pnode_stats.rx_packets += fstats->pnode_stats.rx_packets;
 	stats->pnode_stats.rx_bytes += fstats->pnode_stats.rx_bytes;
-	stats->pnode_stats.rx_dropped += fstats->pnode_stats.rx_dropped;
+	stats->pnode_stats.rx_dropped += nss_cmn_rx_dropped_sum(&fstats->pnode_stats);
 	stats->pnode_stats.tx_packets += fstats->pnode_stats.tx_packets;
 	stats->pnode_stats.tx_bytes += fstats->pnode_stats.tx_bytes;
 }
@@ -210,8 +211,8 @@ static void nss_capwap_msg_handler(struct nss_ctx_instance *nss_ctx, struct nss_
 	/*
 	 * Update the callback and app_data for NOTIFY messages.
 	 */
-	if (ncm->response == NSS_CMM_RESPONSE_NOTIFY) {
-		ncm->cb = (uint32_t)nss_capwap_get_msg_callback(ncm->interface, (void **)&ncm->app_data);
+	if (ncm->response == NSS_CMN_RESPONSE_NOTIFY) {
+		ncm->cb = (nss_ptr_t)nss_capwap_get_msg_callback(ncm->interface, (void **)&ncm->app_data);
 	}
 
 	/*
@@ -266,9 +267,7 @@ static bool nss_capwap_instance_alloc(struct nss_ctx_instance *nss_ctx, uint32_t
  */
 nss_tx_status_t nss_capwap_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_capwap_msg *msg)
 {
-	struct nss_capwap_msg *nm;
 	struct nss_cmn_msg *ncm = &msg->cm;
-	struct sk_buff *nbuf;
 	int32_t status;
 	int32_t if_num;
 
@@ -294,45 +293,7 @@ nss_tx_status_t nss_capwap_tx_msg(struct nss_ctx_instance *nss_ctx, struct nss_c
 	nss_capwap_refcnt_inc(msg->cm.interface);
 	spin_unlock(&nss_capwap_spinlock);
 
-	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
-		nss_warning("%p: capwap msg dropped as core not ready", nss_ctx);
-		status = NSS_TX_FAILURE_NOT_READY;
-		goto out;
-	}
-
-	if (nss_cmn_get_msg_len(ncm) > sizeof(struct nss_capwap_msg)) {
-		nss_warning("%p: message length is invalid: %d", nss_ctx, nss_cmn_get_msg_len(ncm));
-		status = NSS_TX_FAILURE_BAD_PARAM;
-		goto out;
-	}
-
-	nbuf = dev_alloc_skb(NSS_NBUF_PAYLOAD_SIZE);
-	if (unlikely(!nbuf)) {
-		NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_NBUF_ALLOC_FAILS]);
-		nss_warning("%p: msg dropped as command allocation failed", nss_ctx);
-		status = NSS_TX_FAILURE;
-		goto out;
-	}
-
-	/*
-	 * Copy the message to our skb
-	 */
-	nm = (struct nss_capwap_msg *)skb_put(nbuf, sizeof(struct nss_capwap_msg));
-	memcpy(nm, msg, sizeof(struct nss_capwap_msg));
-
-	status = nss_core_send_buffer(nss_ctx, 0, nbuf, NSS_IF_CMD_QUEUE, H2N_BUFFER_CTRL, 0);
-	if (status != NSS_CORE_STATUS_SUCCESS) {
-		dev_kfree_skb_any(nbuf);
-		nss_warning("%p: Unable to enqueue 'capwap message' \n", nss_ctx);
-		goto out;
-	}
-
-	nss_hal_send_interrupt(nss_ctx->nmap, nss_ctx->h2n_desc_rings[NSS_IF_CMD_QUEUE].desc_ring.int_bit,
-				NSS_REGS_H2N_INTR_STATUS_DATA_COMMAND_QUEUE);
-
-	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_CMD_REQ]);
-
-out:
+	status = nss_core_send_cmd(nss_ctx, msg, sizeof(*msg), NSS_NBUF_PAYLOAD_SIZE);
 	nss_capwap_refcnt_dec(msg->cm.interface);
 	return status;
 }
@@ -344,32 +305,9 @@ EXPORT_SYMBOL(nss_capwap_tx_msg);
  */
 nss_tx_status_t nss_capwap_tx_buf(struct nss_ctx_instance *nss_ctx, struct sk_buff *os_buf, uint32_t if_num)
 {
-	int32_t status;
-	uint16_t int_bit = 0;
-
-	NSS_VERIFY_CTX_MAGIC(nss_ctx);
-
-	if (unlikely(nss_ctx->state != NSS_CORE_STATE_INITIALIZED)) {
-		nss_warning("%p: NSS core is not ready", nss_ctx);
-		return NSS_TX_FAILURE_NOT_READY;
-	}
-
 	BUG_ON(!nss_capwap_verify_if_num(if_num));
 
-	int_bit = nss_ctx->h2n_desc_rings[NSS_IF_DATA_QUEUE_0].desc_ring.int_bit;
-	status = nss_core_send_buffer(nss_ctx, if_num, os_buf, NSS_IF_DATA_QUEUE_0, H2N_BUFFER_PACKET, H2N_BIT_FLAG_VIRTUAL_BUFFER);
-	if (unlikely(status != NSS_CORE_STATUS_SUCCESS)) {
-		nss_warning("%p: Unable to enqueue capwap packet\n", nss_ctx);
-		if (status == NSS_CORE_STATUS_FAILURE_QUEUE) {
-			return NSS_TX_FAILURE_QUEUE;
-		}
-		return NSS_TX_FAILURE;
-	}
-
-	nss_hal_send_interrupt(nss_ctx->nmap, int_bit, NSS_REGS_H2N_INTR_STATUS_DATA_COMMAND_QUEUE);
-
-	NSS_PKT_STATS_INCREMENT(nss_ctx, &nss_ctx->nss_top->stats_drv[NSS_STATS_DRV_TX_PACKET]);
-	return NSS_TX_SUCCESS;
+	return nss_core_send_packet(nss_ctx, os_buf, if_num, H2N_BIT_FLAG_VIRTUAL_BUFFER);
 }
 EXPORT_SYMBOL(nss_capwap_tx_buf);
 
@@ -498,7 +436,7 @@ struct nss_ctx_instance *nss_capwap_data_register(uint32_t if_num, nss_capwap_bu
 	}
 	spin_unlock(&nss_capwap_spinlock);
 
-	core_status = nss_core_register_handler(if_num, nss_capwap_msg_handler, NULL);
+	core_status = nss_core_register_handler(nss_ctx, if_num, nss_capwap_msg_handler, NULL);
 	if (core_status != NSS_CORE_STATUS_SUCCESS) {
 		nss_warning("%p: nss core register handler failed for if_num:%d with error :%d", nss_ctx, if_num, core_status);
 		return NULL;
@@ -509,10 +447,7 @@ struct nss_ctx_instance *nss_capwap_data_register(uint32_t if_num, nss_capwap_bu
 		return NULL;
 	}
 
-	nss_ctx->subsys_dp_register[if_num].cb = cb;
-	nss_ctx->subsys_dp_register[if_num].app_data = NULL;
-	nss_ctx->subsys_dp_register[if_num].ndev = netdev;
-	nss_ctx->subsys_dp_register[if_num].features = features;
+	nss_core_register_subsys_dp(nss_ctx, if_num, cb, NULL, NULL, netdev, features);
 
 	return nss_ctx;
 }
@@ -546,12 +481,9 @@ bool nss_capwap_data_unregister(uint32_t if_num)
 	nss_capwap_hdl[if_num - NSS_DYNAMIC_IF_START] = NULL;
 	spin_unlock(&nss_capwap_spinlock);
 
-	(void) nss_core_unregister_handler(if_num);
+	(void) nss_core_unregister_handler(nss_ctx, if_num);
 
-	nss_ctx->subsys_dp_register[if_num].cb = NULL;
-	nss_ctx->subsys_dp_register[if_num].app_data = NULL;
-	nss_ctx->subsys_dp_register[if_num].ndev = NULL;
-	nss_ctx->subsys_dp_register[if_num].features = 0;
+	nss_core_unregister_subsys_dp(nss_ctx, if_num);
 
 	kfree(h);
 	return true;
@@ -605,6 +537,7 @@ EXPORT_SYMBOL(nss_capwap_get_max_buf_size);
 void nss_capwap_init()
 {
 	memset(&nss_capwap_hdl, 0, sizeof(nss_capwap_hdl));
+	nss_capwap_stats_dentry_create();
 }
 
 /*

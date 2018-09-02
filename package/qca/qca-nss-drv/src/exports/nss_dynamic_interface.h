@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2014-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -14,160 +14,226 @@
  **************************************************************************
  */
 
- /*
-  * nss_dynamic_interface.h
-  * 	dynamic interface definitions.
-  */
+/*
+ * @file nss_dynamic_interface.h
+ *	NSS Dynamic interface definitions.
+ */
 
 #ifndef __NSS_DYNAMIC_INTERFACE_H
 #define __NSS_DYNAMIC_INTERFACE_H
 
-#define NSS_MAX_DYNAMIC_INTERFACES 64
+/**
+ * @addtogroup nss_dynamic_interface_subsystem
+ * @{
+ */
+
+#define NSS_MAX_DYNAMIC_INTERFACES 128	/**< Maximum number of dynamic interfaces. */
 
 /**
- * Dynamic Interface types
+ * nss_dynamic_interface_type
+ *	Dynamic interface types.
  */
 enum nss_dynamic_interface_type {
 	NSS_DYNAMIC_INTERFACE_TYPE_NONE,
-	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR,	/* GRE_REDIR Interface type */
-	NSS_DYNAMIC_INTERFACE_TYPE_CAPWAP,		/* CAPWAP Interface type */
-	NSS_DYNAMIC_INTERFACE_TYPE_TUN6RD,		/* TUN6RD Interface type */
-	NSS_DYNAMIC_INTERFACE_TYPE_802_3_REDIR,	/* 802.3 redirect Interface type */
-	NSS_DYNAMIC_INTERFACE_TYPE_WIFI,		/* Wifi redirect Interface type */
-	NSS_DYNAMIC_INTERFACE_TYPE_RADIO_0,		/* WIFI radio type0 */
-	NSS_DYNAMIC_INTERFACE_TYPE_RADIO_1,		/* WIFI radio type1 */
-	NSS_DYNAMIC_INTERFACE_TYPE_RADIO_2,		/* WIFI radio type2 */
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR,
+	NSS_DYNAMIC_INTERFACE_TYPE_CAPWAP,
+	NSS_DYNAMIC_INTERFACE_TYPE_RESERVED_0,
+	NSS_DYNAMIC_INTERFACE_TYPE_RESERVED_1,
+	NSS_DYNAMIC_INTERFACE_TYPE_WIFI,
+	NSS_DYNAMIC_INTERFACE_TYPE_VAP,
+	NSS_DYNAMIC_INTERFACE_TYPE_TUNIPIP6,
+	NSS_DYNAMIC_INTERFACE_TYPE_PPPOE,
 	NSS_DYNAMIC_INTERFACE_TYPE_VIRTIF_DEPRECATED,
-	NSS_DYNAMIC_INTERFACE_TYPE_L2TPV2,		/* L2TPV2 Interface Type */
-	NSS_DYNAMIC_INTERFACE_TYPE_PPTP,		/* PPTP VPN Interface Type */
-	NSS_DYNAMIC_INTERFACE_TYPE_PORTID,		/* PortID Interface Type */
-	NSS_DYNAMIC_INTERFACE_TYPE_DTLS,                /* DTLS Interface Type */
-	NSS_DYNAMIC_INTERFACE_TYPE_MAP_T,		/* MAP-T Interface Type */
-	NSS_DYNAMIC_INTERFACE_TYPE_GRE_TUNNEL,		/* GRE Tunnel Interface Type */
+	NSS_DYNAMIC_INTERFACE_TYPE_L2TPV2,
+	NSS_DYNAMIC_INTERFACE_TYPE_PPTP,
+	NSS_DYNAMIC_INTERFACE_TYPE_PORTID,
+	NSS_DYNAMIC_INTERFACE_TYPE_DTLS,
+	NSS_DYNAMIC_INTERFACE_TYPE_MAP_T,
+	NSS_DYNAMIC_INTERFACE_TYPE_RESERVED_2,
+	NSS_DYNAMIC_INTERFACE_TYPE_BRIDGE,
+	NSS_DYNAMIC_INTERFACE_TYPE_VLAN,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE,
+	NSS_DYNAMIC_INTERFACE_TYPE_WIFILI,
+	NSS_DYNAMIC_INTERFACE_TYPE_RESERVED_3,
+	NSS_DYNAMIC_INTERFACE_TYPE_RESERVED_4,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_TUNNEL_INNER,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_TUNNEL_OUTER,
+	NSS_DYNAMIC_INTERFACE_TYPE_DTLS_CMN_INNER,
+	NSS_DYNAMIC_INTERFACE_TYPE_DTLS_CMN_OUTER,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_WIFI_HOST_INNER,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_WIFI_OFFL_INNER,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_SJACK_INNER,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_OUTER,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_TUNNEL_INLINE_INNER,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_TUNNEL_INLINE_OUTER,
+	NSS_DYNAMIC_INTERFACE_TYPE_802_3_REDIR_N2H,
+	NSS_DYNAMIC_INTERFACE_TYPE_802_3_REDIR_H2N,
+	NSS_DYNAMIC_INTERFACE_TYPE_TUN6RD_INNER,
+	NSS_DYNAMIC_INTERFACE_TYPE_TUN6RD_OUTER,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_LAG_US,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_LAG_DS,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_TUNNEL_INNER_EXCEPTION,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_EXCEPTION_US,
+	NSS_DYNAMIC_INTERFACE_TYPE_GRE_REDIR_EXCEPTION_DS,
 	NSS_DYNAMIC_INTERFACE_TYPE_MAX
 };
 
 typedef enum nss_dynamic_interface_type nss_dynamic_interface_assigned;
 
-/*
- * Dynamic Interface request types
+/**
+ * nss_dynamic_interface_message_types
+ *	Message types for dynamic interface requests.
  */
 enum nss_dynamic_interface_message_types {
-	NSS_DYNAMIC_INTERFACE_ALLOC_NODE,	/* Alloc node message type */
-	NSS_DYNAMIC_INTERFACE_DEALLOC_NODE,	/* Dealloc node message type */
+	NSS_DYNAMIC_INTERFACE_ALLOC_NODE,
+	NSS_DYNAMIC_INTERFACE_DEALLOC_NODE,
 	NSS_DYNAMIC_INTERFACE_MAX,
 };
 
-/*
- * Dynamic interface alloc node msg
+/**
+ * nss_dynamic_interface_alloc_node_msg
+ *	Message information for a dynamic interface allocation node.
  */
 struct nss_dynamic_interface_alloc_node_msg {
-	enum nss_dynamic_interface_type type;	/* Dynamic Interface type */
+	enum nss_dynamic_interface_type type;	/**< Type of dynamic interface. */
+
 	/*
-	 * Response
+	 * Response.
 	 */
-	int if_num;				/* Interface number */
-};
-
-/*
- * Dynamic interface dealloc node msg
- */
-struct nss_dynamic_interface_dealloc_node_msg {
-	enum nss_dynamic_interface_type type;	/* Dynamic Interface type */
-	int if_num;				/* Interface number */
-};
-
-/*
- * Message structure to send/receive Dynamic Interface messages
- */
-struct nss_dynamic_interface_msg {
-	struct nss_cmn_msg cm;							/* Common Message */
-	union {
-		struct nss_dynamic_interface_alloc_node_msg alloc_node;		/* Msg: Allocate dynamic node */
-		struct nss_dynamic_interface_dealloc_node_msg dealloc_node;	/* Msg: deallocate dynamic node */
-	} msg;
-};
-
-/*
- * Private data structure of dynamic interface
- */
-struct nss_dynamic_interface_pvt {
-	struct semaphore sem;			/* Semaphore structure */
-	struct completion complete;		/* completion structure */
-	int current_if_num;			/* Current interface number */
-	enum nss_cmn_response response;		/* Message response */
-	nss_dynamic_interface_assigned type[NSS_MAX_DYNAMIC_INTERFACES]; /* Array of assigned interface types */
+	int if_num;				/**< Dynamic interface number. */
 };
 
 /**
- * @brief allocate node for dynamic interface on NSS
+ * nss_dynamic_interface_dealloc_node_msg
+ *	Message information for dynamic interface deallocation node.
+ */
+struct nss_dynamic_interface_dealloc_node_msg {
+	enum nss_dynamic_interface_type type;
+			/**< Type of dynamic interface. */
+	int if_num;	/**< Dynamic interface number. */
+};
+
+/**
+ * nss_dynamic_interface_msg
+ *	Data for sending and receiving dynamic interface messages.
+ */
+struct nss_dynamic_interface_msg {
+	struct nss_cmn_msg cm;		/**< Common message header. */
+
+	/**
+	 * Payload of a dynamic interface message.
+	 */
+	union {
+		struct nss_dynamic_interface_alloc_node_msg alloc_node;
+				/**< Allocates a dynamic node. */
+		struct nss_dynamic_interface_dealloc_node_msg dealloc_node;
+				/**< Deallocates a dynamic node. */
+	} msg;			/**< Message payload. */
+};
+
+/**
+ * nss_dynamic_interface_alloc_node
+ *	Allocates a node for a dynamic interface.
  *
- * @param type nss dynamic interface type
+ * @datatypes
+ * nss_dynamic_interface_type
  *
- * @return interface number for dynamic interface created on NSS or -1 in case of failure
+ * @param[in] type  Type of dynamic interface.
+ *
+ * @return
+ * Number for the dynamic interface created.
+ * @par
+ * Otherwise, -1 for a failure.
  */
 extern int nss_dynamic_interface_alloc_node(enum nss_dynamic_interface_type type);
 
 /**
- * @brief Deallocate node created for dynamic interface on NSS
+ * nss_dynamic_interface_dealloc_node
+ *	Deallocates a node created for a dynamic interface on the NSS.
  *
- * @param if_num interface number of dynamic interface
- * @param type nss dynamic interface type
+ * @datatypes
+ * nss_dynamic_interface_type
  *
- * @return nss_tx_status_t Tx status
+ * @param[in] if_num  Dynamic interface number.
+ * @param[in] type    Type of dynamic interface.
+ *
+ * @return
+ * Status of the Tx operation.
  */
 extern nss_tx_status_t nss_dynamic_interface_dealloc_node(int if_num, enum nss_dynamic_interface_type type);
 
 /**
- * @brief The inferface number belong to the dynamic interface
+ * nss_is_dynamic_interface
+ *	Specifies whether the interface number belongs to the dynamic interface.
  *
- * @param if_num interface number of dynamic interface
+ * @param[in] if_num  Dynamic interface number.
  *
- * @return bool true or false
+ * @return
+ * TRUE or FALSE
  */
 extern bool nss_is_dynamic_interface(int if_num);
 
 /**
- * @brief Returns the type of dynamic interface
+ * nss_dynamic_interface_get_type
+ *	Returns the type of dynamic interface.
  *
- * @param if_num interface number of dynamic interface
+ * @param[in] nss_ctx  Pointer to the NSS context.
+ * @param[in] if_num   Interface number of dynamic interface.
  *
- * @return type nss dynamic interface type
+ * @return
+ * Type of dynamic interface per the dynamic interface number.
  */
-extern enum nss_dynamic_interface_type nss_dynamic_interface_get_type(int if_num);
+extern enum nss_dynamic_interface_type nss_dynamic_interface_get_type(struct nss_ctx_instance *nss_ctx, int if_num);
 
 /**
- * @brief Transmits an asynchronous message to firmware.
+ * nss_dynamic_interface_tx
+ *	Transmits an asynchronous message to the firmware.
  *
- * @param nss_ctx context
- * @param msg dynamic interface message to be sent to the firmware.
+ * @datatypes
+ * nss_ctx_instance \n
+ * nss_dynamic_interface_msg
  *
- * @return message Tx status
+ * @param[in] nss_ctx  Pointer to the NSS context.
+ * @param[in] msg      Pointer to the message data.
+ *
+ * @return
+ * Status of the transmit operation.
  */
 extern nss_tx_status_t nss_dynamic_interface_tx(struct nss_ctx_instance *nss_ctx, struct nss_dynamic_interface_msg *msg);
 
 /**
- * @brief Dynamic interface message callback type
+ * Callback function for dynamic interface messages.
  *
- * @param app_data app_data returned to callback fn.
- * @param msg nss common message
+ * @datatypes
+ * nss_cmn_msg
  *
- * @return void
+ * @param[in] app_data  Pointer to the application context of the message.
+ * @param[in] msg       Pointer to the message data.
  */
 typedef void (*nss_dynamic_interface_msg_callback_t)(void *app_data, struct nss_cmn_msg *msg);
 
 /**
- * @brief Initialize dynamic interface message
+ * nss_dynamic_interface_msg_init
+ *	Initializes a dynamic interface message.
  *
- * @param ndm dynamic interface message to be initialized.
- * @param if_num Interface number.
- * @param type dynamic interface type
- * @param len message length
- * @param cb callback to be invoked
- * @param app_data app_data passed to the callback fn.
+ * @datatypes
+ * nss_dynamic_interface_msg
  *
- * @return void
+ * @param[in] ndm       Pointer to the dynamic interface message.
+ * @param[in] if_num    Dynamic interface number.
+ * @param[in] type      Type of message.
+ * @param[in] len       Size of the payload.
+ * @param[in] cb        Pointer to the message callback.
+ * @param[in] app_data  Pointer to the application context that is passed to the callback function.
+ *
+ * @return
+ * None.
  */
 void nss_dynamic_interface_msg_init(struct nss_dynamic_interface_msg *ndm, uint16_t if_num, uint32_t type, uint32_t len,
 						void *cb, void *app_data);
+
+/**
+ * @}
+ */
+
 #endif /* __NSS_DYNAMIC_INTERFACE_H*/

@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2013 - 2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -73,6 +73,7 @@ static void *pm_client;
  * Handler to send NSS messages
  */
 struct clk *nss_core0_clk;
+struct clk *nss_core1_clk;
 
 /*
  * Handle fabric requests - only on new kernel
@@ -80,7 +81,6 @@ struct clk *nss_core0_clk;
 #if (NSS_DT_SUPPORT == 1)
 struct clk *nss_fab0_clk;
 struct clk *nss_fab1_clk;
-bool nss_crypto_is_scaled = false;
 #endif
 
 /*
@@ -100,7 +100,7 @@ extern struct of_device_id nss_dt_ids[];
 
 /*
  * nss_probe()
- * 	HLOS device probe callback
+ *	HLOS device probe callback
  */
 static inline int nss_probe(struct platform_device *nss_dev)
 {
@@ -109,12 +109,25 @@ static inline int nss_probe(struct platform_device *nss_dev)
 
 /*
  * nss_remove()
- * 	HLOS device remove callback
+ *	HLOS device remove callback
  */
 static inline int nss_remove(struct platform_device *nss_dev)
 {
 	return nss_hal_remove(nss_dev);
 }
+
+#if (NSS_DT_SUPPORT == 1)
+/*
+ * Platform Device ID for NSS core.
+ */
+struct of_device_id nss_dt_ids[] = {
+	{ .compatible = "qcom,nss" },
+	{ .compatible = "qcom,nss0" },
+	{ .compatible = "qcom,nss1" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, nss_dt_ids);
+#endif
 
 /*
  * nss_driver
@@ -137,7 +150,7 @@ struct platform_driver nss_driver = {
  * nss_reset_frequency_stats_samples()
  *	Reset all frequency sampling state when auto scaling is turned off.
  */
-static void nss_reset_frequency_stats_samples (void)
+static void nss_reset_frequency_stats_samples(void)
 {
 	nss_runtime_samples.buffer_index = 0;
 	nss_runtime_samples.sum = 0;
@@ -145,97 +158,6 @@ static void nss_reset_frequency_stats_samples (void)
 	nss_runtime_samples.sample_count = 0;
 	nss_runtime_samples.message_rate_limit = 0;
 	nss_runtime_samples.freq_scale_rate_limit_down = 0;
-}
-
-/*
- ***************************************************************************************************
- * nss_wq_function() is used to queue up requests to change NSS frequencies.
- * The function will take care of NSS notices and also control clock.
- * The auto rate algorithmn will queue up requests or the procfs may also queue up these requests.
- ***************************************************************************************************
- */
-
-/*
- * nss_wq_function()
- *	Added to Handle BH requests to kernel
- */
-void nss_wq_function (struct work_struct *work)
-{
-	nss_work_t *my_work = (nss_work_t *)work;
-#if (NSS_DT_SUPPORT == 1)
-	nss_crypto_pm_event_callback_t crypto_pm_cb;
-	bool auto_scale;
-	bool turbo;
-
-	/*
-	 * If crypto clock is in Turbo, disable scaling for other
-	 * NSS subsystem components and retain them at turbo
-	 */
-	if (nss_crypto_is_scaled) {
-		nss_cmd_buf.current_freq = nss_runtime_samples.freq_scale[NSS_FREQ_HIGH_SCALE].frequency;
-		return;
-	}
-#endif
-
-	nss_freq_change(&nss_top_main.nss[NSS_CORE_0], my_work->frequency, my_work->stats_enable, 0);
-	if (nss_top_main.nss[NSS_CORE_1].state == NSS_CORE_STATE_INITIALIZED) {
-		nss_freq_change(&nss_top_main.nss[NSS_CORE_1], my_work->frequency, my_work->stats_enable, 0);
-	}
-	clk_set_rate(nss_core0_clk, my_work->frequency);
-	nss_freq_change(&nss_top_main.nss[NSS_CORE_0], my_work->frequency, my_work->stats_enable, 1);
-	if (nss_top_main.nss[NSS_CORE_1].state == NSS_CORE_STATE_INITIALIZED) {
-		nss_freq_change(&nss_top_main.nss[NSS_CORE_1], my_work->frequency, my_work->stats_enable, 1);
-	}
-
-/*
- * If we are running NSS_PM_SUPPORT, we are on banana
- * otherwise, we check if we are are on new kernel by checking if the
- * fabric lookups are not NULL (success in init()))
- */
-#if (NSS_PM_SUPPORT == 1)
-	if (!pm_client) {
-		goto out;
-	}
-
-	if (my_work->frequency >= NSS_FREQ_733) {
-		nss_pm_set_perf_level(pm_client, NSS_PM_PERF_LEVEL_TURBO);
-	} else if (my_work->frequency > NSS_FREQ_110) {
-		nss_pm_set_perf_level(pm_client, NSS_PM_PERF_LEVEL_NOMINAL);
-	} else {
-		nss_pm_set_perf_level(pm_client, NSS_PM_PERF_LEVEL_IDLE);
-	}
-
-out:
-#else
-#if (NSS_DT_SUPPORT == 1)
-#if (NSS_FABRIC_SCALING_SUPPORT == 1)
-	scale_fabrics();
-#endif
-	if ((nss_fab0_clk != NULL) && (nss_fab1_clk != NULL)) {
-		if (my_work->frequency >= NSS_FREQ_733) {
-			clk_set_rate(nss_fab0_clk, NSS_FABRIC0_TURBO);
-			clk_set_rate(nss_fab1_clk, NSS_FABRIC1_TURBO);
-		} else if (my_work->frequency > NSS_FREQ_110) {
-			clk_set_rate(nss_fab0_clk, NSS_FABRIC0_NOMINAL);
-			clk_set_rate(nss_fab1_clk, NSS_FABRIC1_NOMINAL);
-		} else {
-			clk_set_rate(nss_fab0_clk, NSS_FABRIC0_IDLE);
-			clk_set_rate(nss_fab1_clk, NSS_FABRIC1_IDLE);
-		}
-
-		/*
-		 * notify crypto about the clock change
-		 */
-		crypto_pm_cb = nss_top_main.crypto_pm_callback;
-		if (crypto_pm_cb) {
-			turbo = (my_work->frequency >= NSS_FREQ_733);
-			auto_scale = nss_cmd_buf.auto_scale;
-			nss_crypto_is_scaled = crypto_pm_cb(nss_top_main.crypto_pm_ctx, turbo, auto_scale);
-		}
-	}
-#endif
-#endif
-	kfree((void *)work);
 }
 
 /*
@@ -284,7 +206,7 @@ static int nss_current_freq_handler(struct ctl_table *ctl, int write, void __use
 		nss_info("NSS Freq WQ kmalloc fail");
 		return ret;
 	}
-	INIT_WORK((struct work_struct *)nss_work, nss_wq_function);
+	INIT_WORK((struct work_struct *)nss_work, nss_hal_wq_function);
 	nss_work->frequency = nss_cmd_buf.current_freq;
 	nss_work->stats_enable = 0;
 
@@ -324,7 +246,7 @@ static int nss_auto_scale_handler(struct ctl_table *ctl, int write, void __user 
 				nss_info("NSS Freq WQ kmalloc fail");
 				return ret;
 			}
-			INIT_WORK((struct work_struct *)nss_work, nss_wq_function);
+			INIT_WORK((struct work_struct *)nss_work, nss_hal_wq_function);
 			nss_work->frequency = nss_cmd_buf.current_freq;
 			nss_work->stats_enable = 0;
 			queue_work(nss_wq, (struct work_struct *)nss_work);
@@ -357,7 +279,7 @@ static int nss_auto_scale_handler(struct ctl_table *ctl, int write, void __user 
 		nss_info("NSS Freq WQ kmalloc fail");
 		return ret;
 	}
-	INIT_WORK((struct work_struct *)nss_work, nss_wq_function);
+	INIT_WORK((struct work_struct *)nss_work, nss_hal_wq_function);
 	nss_work->frequency = nss_cmd_buf.current_freq;
 	nss_work->stats_enable = 1;
 	queue_work(nss_wq, (struct work_struct *)nss_work);
@@ -386,7 +308,7 @@ static int nss_get_freq_table_handler(struct ctl_table *ctl, int write, void __u
 
 	i = 0;
 	while (i < NSS_FREQ_MAX_SCALE) {
-		printk("%dMhz ", nss_runtime_samples.freq_scale[i].frequency/1000000);
+		printk("%d Hz ", nss_runtime_samples.freq_scale[i].frequency);
 		i++;
 	}
 	printk("\n");
@@ -448,9 +370,14 @@ static int nss_coredump_handler(struct ctl_table *ctl, int write, void __user *b
 
 	ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
 	if (!ret) {
-		if ((write) && (nss_ctl_debug != 0)) {
+		/*
+		 * if nss_cmd_buf.coredump is not 0 or 1, panic will be disabled
+		 * when NSS FW crashes, so OEM/ODM have a chance to use mdump
+		 * to dump crash dump (coredump) and send dump to us for analysis.
+		 */
+		if ((write) && (nss_ctl_debug != 0) && nss_cmd_buf.coredump == 1) {
 			printk("Coredumping to DDR\n");
-			nss_hal_send_interrupt(nss_ctx->nmap, nss_ctx->h2n_desc_rings[NSS_IF_CMD_QUEUE].desc_ring.int_bit, NSS_REGS_H2N_INTR_STATUS_TRIGGER_COREDUMP);
+			nss_hal_send_interrupt(nss_ctx, NSS_H2N_INTR_TRIGGER_COREDUMP);
 		}
 	}
 
@@ -542,7 +469,7 @@ static struct ctl_table nss_general_table[] = {
 		.data                   = &nss_ctl_redirect,
 		.maxlen                 = sizeof(int),
 		.mode                   = 0644,
-		.proc_handler   	= proc_dointvec,
+		.proc_handler		= proc_dointvec,
 	},
 #if (NSS_FW_DBG_SUPPORT == 1)
 	{
@@ -550,7 +477,7 @@ static struct ctl_table nss_general_table[] = {
 		.data                   = &nss_ctl_debug,
 		.maxlen                 = sizeof(int),
 		.mode                   = 0644,
-		.proc_handler   	= &nss_debug_handler,
+		.proc_handler		= &nss_debug_handler,
 	},
 #endif
 	{
@@ -558,14 +485,14 @@ static struct ctl_table nss_general_table[] = {
 		.data                   = &nss_cmd_buf.coredump,
 		.maxlen                 = sizeof(int),
 		.mode                   = 0644,
-		.proc_handler   	= &nss_coredump_handler,
+		.proc_handler		= &nss_coredump_handler,
 	},
 	{
 		.procname               = "logbuf",
 		.data                   = &nss_ctl_logbuf,
 		.maxlen                 = sizeof(int),
 		.mode                   = 0644,
-		.proc_handler   	= &nss_logbuffer_handler,
+		.proc_handler		= &nss_logbuffer_handler,
 	},
 	{
 		.procname               = "jumbo_mru",
@@ -628,9 +555,7 @@ static int __init nss_init(void)
 {
 #if (NSS_DT_SUPPORT == 1)
 	struct device_node *cmn = NULL;
-	struct resource res_nss_fpb_base;
 #endif
-
 	nss_info("Init NSS driver");
 
 #if (NSS_DT_SUPPORT == 1)
@@ -642,35 +567,42 @@ static int __init nss_init(void)
 		nss_info_always("qca-nss-drv.ko is loaded for symbol link\n");
 		return 0;
 	}
-
-	if (of_address_to_resource(cmn, 0, &res_nss_fpb_base) != 0) {
-		nss_info("of_address_to_resource() return error for nss_fpb_base\n");
-		of_node_put(cmn);
-		return -EFAULT;
-	}
-
-	nss_top_main.nss_fpb_base = ioremap_nocache(res_nss_fpb_base.start,
-						    resource_size(&res_nss_fpb_base));
-	if (!nss_top_main.nss_fpb_base) {
-		nss_info("ioremap fail for nss_fpb_base\n");
-		of_node_put(cmn);
-		return -EFAULT;
-	}
-
-	nss_top_main.nss_hal_common_init_done = false;
+	of_node_put(cmn);
 
 	/*
-	 * Release reference to NSS common device node
+	 * Pick up HAL by target information
 	 */
-	of_node_put(cmn);
-	cmn = NULL;
+#if defined(NSS_HAL_IPQ806X_SUPPORT)
+	if (of_machine_is_compatible("qcom,ipq8064") || of_machine_is_compatible("qcom,ipq8062")) {
+		nss_top_main.hal_ops = &nss_hal_ipq806x_ops;
+		nss_top_main.data_plane_ops = &nss_data_plane_gmac_ops;
+	}
+#endif
+#if defined(NSS_HAL_IPQ807x_SUPPORT)
+	if (of_machine_is_compatible("qcom,ipq807x")) {
+		nss_top_main.hal_ops = &nss_hal_ipq807x_ops;
+		nss_top_main.data_plane_ops = &nss_data_plane_edma_ops;
+	}
+#endif
+#if defined(NSS_HAL_FSM9010_SUPPORT)
+	if (of_machine_is_compatible("qcom,fsm9010")) {
+		nss_top_main.hal_ops = &nss_hal_fsm9010_ops;
+		nss_top_main.data_plane_ops = &nss_data_plane_gmac_ops;
+	}
+#endif
+	if (!nss_top_main.hal_ops) {
+		nss_info_always("No supported HAL compiled on this platform\n");
+		return -EFAULT;
+	}
 #else
 	/*
-	 * Perform clock init common to all NSS cores
+	 * For banana, only ipq806x is supported
 	 */
-	nss_hal_common_reset(&(nss_top_main.clk_src));
+	nss_top_main.hal_ops = &nss_hal_ipq806x_ops;
+	nss_top_main.data_plane_ops = &nss_data_plane_gmac_ops;
 
 #endif /* NSS_DT_SUPPORT */
+	nss_top_main.nss_hal_common_init_done = false;
 
 	/*
 	 * Initialize data_plane workqueue
@@ -685,6 +617,7 @@ static int __init nss_init(void)
 	 */
 	spin_lock_init(&(nss_top_main.lock));
 	spin_lock_init(&(nss_top_main.stats_lock));
+	mutex_init(&(nss_top_main.wq_lock));
 
 	/*
 	 * Enable NSS statistics
@@ -706,6 +639,21 @@ static int __init nss_init(void)
 	 * Registering sysctl for n2h specific config.
 	 */
 	nss_n2h_register_sysctl();
+
+	/*
+	 * Registering sysctl for rps specific config.
+	 */
+	nss_rps_register_sysctl();
+
+	/*
+	 * Registering sysctl for c2c_tx specific config.
+	 */
+	nss_c2c_tx_register_sysctl();
+
+	/*
+	 * Register sysctl for project config
+	 */
+	nss_project_register_sysctl();
 
 	/*
 	 * Setup Runtime Sample values
@@ -745,7 +693,7 @@ static int __init nss_init(void)
 	/*
 	 * Initialize mtu size needed as start
 	 */
-	nss_top_main.prev_mtu_sz = NSS_GMAC_NORMAL_FRAME_MTU;
+	nss_top_main.prev_mtu_sz = ETH_DATA_LEN;
 
 	/*
 	 * register panic handler and timeout control
@@ -759,6 +707,23 @@ static int __init nss_init(void)
 	nss_capwap_init();
 
 	/*
+	 * Init QRFS
+	 */
+	nss_qrfs_init();
+
+	/*
+	 * Init c2c_tx
+	 */
+	nss_c2c_tx_init();
+
+	/*
+	 * INIT ppe on supported platform
+	 */
+	if (of_machine_is_compatible("qcom,ipq807x")) {
+		nss_ppe_init();
+	}
+
+	/*
 	 * Register platform_driver
 	 */
 	return platform_driver_register(&nss_driver);
@@ -770,19 +735,6 @@ static int __init nss_init(void)
  */
 static void __exit nss_cleanup(void)
 {
-#if (NSS_DT_SUPPORT == 1)
-	struct device_node *cmn = NULL;
-
-	/*
-	 * Get reference to NSS common device node
-	 */
-	cmn = of_find_node_by_name(NULL, "nss-common");
-	if (!cmn) {
-		nss_info_always("cannot find nss-common node, maybe just for symbol link\n");
-		return;
-	}
-#endif
-
 	nss_info("Exit NSS driver");
 
 	if (nss_dev_header)
@@ -794,19 +746,36 @@ static void __exit nss_cleanup(void)
 	nss_n2h_unregister_sysctl();
 
 	/*
+	 * Unregister rps specific sysctl
+	 */
+	nss_rps_unregister_sysctl();
+
+	/*
+	 * Unregister c2c_tx specific sysctl
+	 */
+	nss_c2c_tx_unregister_sysctl();
+
+	/*
 	 * Unregister ipv4/6 specific sysctl
 	 */
 	nss_ipv4_unregister_sysctl();
 	nss_ipv6_unregister_sysctl();
 
-#if (NSS_DT_SUPPORT == 1)
-	if(nss_top_main.nss_fpb_base) {
-		iounmap(nss_top_main.nss_fpb_base);
-		nss_top_main.nss_fpb_base = 0;
-	}
-#endif
+	/*
+	 * Free Memory allocated for connection tables
+	 */
+	nss_ipv4_free_conn_tables();
+	nss_ipv6_free_conn_tables();
 
+	nss_project_unregister_sysctl();
 	nss_data_plane_destroy_delay_work();
+
+	/*
+	 * cleanup ppe on supported platform
+	 */
+	if (of_machine_is_compatible("qcom,ipq807x")) {
+		nss_ppe_free();
+	}
 
 	platform_driver_unregister(&nss_driver);
 }
