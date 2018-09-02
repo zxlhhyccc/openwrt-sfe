@@ -325,7 +325,7 @@ static void nss_gmac_get_stats64(struct net_device *netdev,
 	BUG_ON(gmacdev == NULL);
 
 	if (!gmacdev->data_plane_ops)
-		return stats;
+		return;
 
 	spin_lock_bh(&gmacdev->stats_lock);
 	gmacdev->data_plane_ops->get_stats(gmacdev->data_plane_ctx, &gmacdev->nss_stats);

@@ -202,8 +202,7 @@ static void nss_gmac_get_strings(struct net_device *netdev, uint32_t stringset,
 
 	case ETH_SS_PRIV_FLAGS:
 		for (i = 0; i < NSS_GMAC_PRIV_FLAGS_LEN; i++) {
-			memcpy(p, gmac_strings_priv_flags[i],
-				ETH_GSTRING_LEN);
+			strcpy(p, gmac_strings_priv_flags[i]);
 			p += ETH_GSTRING_LEN;
 		}
 
