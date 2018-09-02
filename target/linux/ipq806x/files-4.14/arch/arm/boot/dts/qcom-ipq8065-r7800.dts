@@ -389,7 +389,9 @@
 			clocks = <&gcc NSS_CORE_CLK>,
 				 <&gcc NSSTCM_CLK_SRC>, <&gcc NSSTCM_CLK>,
 				 <&rpmcc RPM_NSS_FABRIC_0_CLK>, <&rpmcc RPM_NSS_FABRIC_1_CLK>;
-			clock-names = "nss_core_clk", "nss_tcm_src", "nss_tcm_clk", "nss-fab0-clk", "nss-fab1-clk";
+			clock-names = "nss-core-clk", "nss-tcm-src",
+				      "nss-tcm-clk", "nss-fab0-clk",
+				      "nss-fab1-clk";
 			resets = <&gcc UBI32_CORE1_CLKRST_CLAMP_RESET>,
 				 <&gcc UBI32_CORE1_CLAMP_RESET>,
 				 <&gcc UBI32_CORE1_AHB_RESET>,
@@ -426,7 +428,7 @@
 			reg-names = "nphys", "vphys";
 			clocks = <&gcc NSS_CORE_CLK>,
 				 <&gcc NSSTCM_CLK_SRC>, <&gcc NSSTCM_CLK>;
-			clock-names = "nss_core_clk", "nss_tcm_src", "nss_tcm_clk";
+			clock-names = "nss-core-clk", "nss-tcm-src", "nss-tcm-clk";
 			resets = <&gcc UBI32_CORE2_CLKRST_CLAMP_RESET>,
 				 <&gcc UBI32_CORE2_CLAMP_RESET>,
 				 <&gcc UBI32_CORE2_AHB_RESET>,
