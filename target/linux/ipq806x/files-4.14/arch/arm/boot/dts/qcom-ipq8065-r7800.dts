@@ -400,7 +400,7 @@
 				 <&gcc UBI32_CORE1_CLAMP_RESET>,
 				 <&gcc UBI32_CORE1_AHB_RESET>,
 				 <&gcc UBI32_CORE1_AXI_RESET>;
-			reset-names = "clkrst_clamp", "clamp", "ahb", "axi";
+			reset-names = "clkrst-clamp", "clamp", "ahb", "axi";
 
 			qcom,id = <0>;
 			qcom,num-irq = <2>;
