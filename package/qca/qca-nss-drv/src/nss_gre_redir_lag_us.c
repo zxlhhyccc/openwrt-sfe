@@ -563,7 +563,7 @@ bool nss_gre_redir_lag_us_configure_node(uint32_t ifnum,
 	}
 
 	spin_lock_bh(&cmn_ctx.nss_gre_redir_lag_us_stats_lock);
-	if (nss_gre_redir_lag_us_get_node_idx(ifnum, &idx)) {
+	if (!nss_gre_redir_lag_us_get_node_idx(ifnum, &idx)) {
 		spin_unlock_bh(&cmn_ctx.nss_gre_redir_lag_us_stats_lock);
 		nss_warning("%p: Stats context not found.\n", nss_ctx);
 		return false;

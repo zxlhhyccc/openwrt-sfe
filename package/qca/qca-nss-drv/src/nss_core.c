@@ -358,7 +358,7 @@ static void nss_get_ddr_info(struct nss_mmu_ddr_info *mmu, char *name)
 	struct device_node *node;
 
 	si_meminfo(&vals);
-	cached = global_page_state(NR_FILE_PAGES);
+	cached = global_zone_page_state(NR_FILE_PAGES);
 	avail_ddr = (vals.totalram + cached + vals.sharedram) * vals.mem_unit;
 
 	/*
