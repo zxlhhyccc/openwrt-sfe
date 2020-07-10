@@ -9,10 +9,6 @@
 	compatible = "glinet,gl-ar750s", "qca,qca9563";
 	model = "GL.iNet GL-AR750S";
 
-	chosen {
-		bootargs = "console=ttyS0,115200n8";
-	};
-
 	aliases {
 		led-boot = &led_power;
 		led-failsafe = &led_power;
@@ -75,7 +71,6 @@
 	status = "okay";
 
 	num-cs = <2>;
-	cs-gpios = <0>, <0>;
 
 	flash_nor: flash@0 {
 		compatible = "jedec,spi-nor";

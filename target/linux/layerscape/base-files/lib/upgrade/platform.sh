@@ -1,10 +1,11 @@
-#!/bin/sh
 #
 # Copyright 2015-2019 Traverse Technologies
 #
 
 RAMFS_COPY_BIN="/usr/sbin/fw_printenv /usr/sbin/fw_setenv /usr/sbin/ubinfo /bin/echo"
 RAMFS_COPY_DATA="/etc/fw_env.config /var/lock/fw_printenv.lock"
+
+REQUIRE_IMAGE_METADATA=1
 
 platform_do_upgrade_traverse_nandubi() {
 	bootsys=$(fw_printenv bootsys | awk -F= '{{print $2}}')
@@ -32,6 +33,9 @@ platform_check_image() {
 		nand_do_platform_check "traverse-ls1043" $1
 		return $?
 		;;
+	fsl,ls1012a-frdm)
+		return 0
+		;;
 	*)
 		echo "Sysupgrade is not currently supported on $board"
 		;;
@@ -50,6 +54,10 @@ platform_do_upgrade() {
 	traverse,ls1043v | \
 	traverse,ls1043s)
 		platform_do_upgrade_traverse_nandubi "$1"
+		;;
+	fsl,ls1012a-frdm)
+		PART_NAME=firmware
+		default_do_upgrade "$1"
 		;;
 	*)
 		echo "Sysupgrade is not currently supported on $board"
